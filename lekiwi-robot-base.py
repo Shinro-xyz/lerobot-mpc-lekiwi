@@ -11,13 +11,8 @@ def MobileRobotBaseKinematics(n:int,R:float,gamma:float, r:float):
     for i in range(n):
         angle=i*theta+gamma
         angle_list.append(angle)
-        
-    A=np.zeros((n,n))
     sin_list=np.sin(angle_list)
     cos_list=np.cos(angle_list)
-
-    
-    
-
-lekiwi=MobileRobotBaseKinematics(n=3,R=1,gamma=-np.pi/2,r=1)
-print(type(lekiwi))
+    #inverse kinematics, LTI matrix
+    A=np.column_stack((sin_list,-cos_list,np.full_like(sin_list, -R)))
+    return A, np.linalg.pinv(A)
