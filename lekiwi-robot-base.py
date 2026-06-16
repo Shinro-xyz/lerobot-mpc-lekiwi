@@ -1,5 +1,16 @@
 import numpy as np
 
+class HolonomicMobileRobot:
+    def __init__(self, num_wheels:int,radius_robots:float,gamma:float,radius_wheels:float ):
+        """Covers holonomic robots, which lekiwi is """
+        # n:number of wheels
+        # gamma:first wheel angle from base of the robot, use the MJCF definition
+        # R: is the robot’s radius / the distance between the robot’s center and the wheels.
+        self.n=num_wheels
+        self.R=radius_robots
+        self.gamma=gamma
+        self.r=radius_wheels
+
 def MobileRobotBaseKinematics(n:int,R:float,gamma:float, r:float):
 
     """Covers holonomic robots, which lekiwi is """
