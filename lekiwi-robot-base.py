@@ -1,5 +1,4 @@
 import numpy as np
-from numpy._core.strings import lower
 from scipy.sparse import block_diag
 import osqp
 from scipy import sparse
@@ -35,7 +34,7 @@ class HolonomicMobileRobot:
         rot_matrix= np.array([[c,s,0],[-s,c,0],[0,0,1]])
         A_kinematics, A_pinv_kin=self.mobilerobotkinematics()
         u_body=rot_matrix@u_world
-        wheel_speeds=(1/self.r)*A_kinematics*u_body
+        wheel_speeds=(1/self.r)*A_kinematics@u_body
         self.state+=u_world*self.dt
         return wheel_speeds
 
@@ -51,14 +50,14 @@ class MPC_LTI:
         self.B=B_dynamics
         self.P=terminal_cost
 
-    def constraits(self, constraint_matrix: np.ndarray,upper_bounds:np.ndarray, lower_bounds:np.ndarray):
+    def constraints(self, constraint_matrix: np.ndarray,upper_bounds:np.ndarray, lower_bounds:np.ndarray):
         self.A_constraints=constraint_matrix
         self.lcons=lower_bounds
         self.ucons=upper_bounds
     
     def _mpc_dynamics_matrices(self):
         self.n=self.A.shape[0] #state dim
-        m= self.B.shape[1] #control dim
+        self.m= self.B.shape[1] #control dim
 
         T_list=[]
         for n_step in range(self.N):
@@ -86,7 +85,18 @@ class MPC_LTI:
     def solve(self,x0):
         prob=osqp.OSQP()
         q=self.F.T@x0
-        prob.setup(sparse.csc_matrix(self.H), q.flatten(),self.A_constraints, self.lcons,self.u)
+        prob.setup(sparse.csc_matrix(self.H), q.flatten(),self.A_constraints, self.lcons,self.ucons, warm_starting=True)
+        res=prob.solve()
+
+        #solve the problem
+        if res.info.status=="solved":
+            z_optimal=res.x #optimal sequence of control outputs
+            ctrl=z_optimal[:self.m]
+        else:
+            print("osqp could not find a solution")
+
+        return ctrl
+        
         
 
     
