@@ -1,6 +1,8 @@
 import numpy as np
 from numpy._core.strings import lower
 from scipy.sparse import block_diag
+import osqp
+from scipy import sparse
 
 class HolonomicMobileRobot:
     def __init__(self, num_wheels:int,radius_robots:float,gamma:float,radius_wheels:float, dt:float):
@@ -80,6 +82,12 @@ class MPC_LTI:
         R_bar = np.kron(np.eye(self.N), self.R)  
         self.H=2*(R_bar+self.S_bar.T@Q_bar@self.S_bar)
         self.F=2*(self.T_bar@Q_bar@self.S_bar)
+
+    def solve(self,x0):
+        prob=osqp.OSQP()
+        q=self.F.T@x0
+        prob.setup(sparse.csc_matrix(self.H), q.flatten(),self.A_constraints, self.lcons,self.u)
+        
 
     
 
