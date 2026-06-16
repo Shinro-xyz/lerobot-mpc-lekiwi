@@ -40,7 +40,7 @@ class HolonomicMobileRobot:
     def set_pose(self,x,y,theta):
         self.state=np.array([x,y,theta])
 
-class MPC:
+class MPC_LTI:
     def __init__(self,horizon:int, control_cost_matrix:np.ndarray, state_cost_matrix:np.ndarray,A_dynamics:np.ndarray,B_dynamics: np.ndarray):
         self.N=horizon
         self.Q=state_cost_matrix
@@ -48,5 +48,21 @@ class MPC:
         self.A=A_dynamics
         self.B=B_dynamics
 
-    def _dynamic_matrices(self):
+    def mpc_dynamics_matrices(self):
+        n=self.A.shape[0] #state dim
+        m= self.B.shape[1] #control dim
+
+        T_list=[]
+        for n_step in range(self.N):
+            A_new=np.linalg.matrix_power(self.A, n_step)
+            T_list.append(A_new)
+        self.T_bar=np.vstack(T_list)
+
+        self.S_bar=np.zeros((self.N*n,self.N*m))
+        for i in range(self.N):
+            for j in range(i+1):
+                self.S_bar[i*n:(i+1)*n, j*m:(j+1)*m] = np.linalg.matrix_power(self.A, i-j) @ self.B
+
+    def mpc_cost_matrices(self):
+        
         
