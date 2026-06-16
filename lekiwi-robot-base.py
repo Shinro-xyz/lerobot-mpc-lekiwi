@@ -1,3 +1,5 @@
+from tkinter.constants import HORIZONTAL
+
 import numpy as np
 
 class HolonomicMobileRobot:
@@ -31,6 +33,20 @@ class HolonomicMobileRobot:
         rot_matrix= np.array([[c,s,0],[-s,c,0],[0,0,1]])
         A_kinematics, A_pinv_kin=self.mobilerobotkinematics()
         u_body=rot_matrix@u_world
-        wheel_speeds=
-        
+        wheel_speeds=(1/self.r)*A_kinematics*u_body
+        self.state+=u_world*self.dt
+        return wheel_speeds
+
+    def set_pose(self,x,y,theta):
+        self.state=np.array([x,y,theta])
+
+class MPC:
+    def __init__(self,horizon:int, control_cost_matrix:np.ndarray, state_cost_matrix:np.ndarray,A_dynamics:np.ndarray,B_dynamics: np.ndarray):
+        self.N=horizon
+        self.Q=state_cost_matrix
+        self.R=control_cost_matrix
+        self.A=A_dynamics
+        self.B=B_dynamics
+
+    def _dynamic_matrices(self):
         
