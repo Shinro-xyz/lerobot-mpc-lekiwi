@@ -1,6 +1,6 @@
-from tkinter.constants import HORIZONTAL
-
 import numpy as np
+from numpy._core.strings import lower
+from scipy.sparse import block_diag
 
 class HolonomicMobileRobot:
     def __init__(self, num_wheels:int,radius_robots:float,gamma:float,radius_wheels:float, dt:float):
@@ -41,15 +41,21 @@ class HolonomicMobileRobot:
         self.state=np.array([x,y,theta])
 
 class MPC_LTI:
-    def __init__(self,horizon:int, control_cost_matrix:np.ndarray, state_cost_matrix:np.ndarray,A_dynamics:np.ndarray,B_dynamics: np.ndarray):
+    def __init__(self,horizon:int, control_cost_matrix:np.ndarray, state_cost_matrix:np.ndarray,A_dynamics:np.ndarray,B_dynamics: np.ndarray, terminal_cost:np.ndarray):
         self.N=horizon
         self.Q=state_cost_matrix
         self.R=control_cost_matrix
         self.A=A_dynamics
         self.B=B_dynamics
+        self.P=terminal_cost
 
-    def mpc_dynamics_matrices(self):
-        n=self.A.shape[0] #state dim
+    def constraits(self, constraint_matrix: np.ndarray,upper_bounds:np.ndarray, lower_bounds:np.ndarray):
+        self.A_constraints=constraint_matrix
+        self.lcons=lower_bounds
+        self.ucons=upper_bounds
+    
+    def _mpc_dynamics_matrices(self):
+        self.n=self.A.shape[0] #state dim
         m= self.B.shape[1] #control dim
 
         T_list=[]
@@ -58,11 +64,26 @@ class MPC_LTI:
             T_list.append(A_new)
         self.T_bar=np.vstack(T_list)
 
-        self.S_bar=np.zeros((self.N*n,self.N*m))
+        self.S_bar=np.zeros((self.N*self.n,self.N*m))
         for i in range(self.N):
             for j in range(i+1):
-                self.S_bar[i*n:(i+1)*n, j*m:(j+1)*m] = np.linalg.matrix_power(self.A, i-j) @ self.B
+                self.S_bar[i*self.n:(i+1)*self.n, j*m:(j+1)*m] = np.linalg.matrix_power(self.A, i-j) @ self.B
 
-    def mpc_cost_matrices(self):
+    def _mpc_cost_matrices(self):
+        # Q_bar: block diagonal of Q (with P at the end for terminal cost)
+        Q_bar = np.zeros((self.N * self.n, self.N * self.n))
+        for i in range(self.N - 1):
+            Q_bar[i*self.n:(i+1)*self.n, i*self.n:(i+1)*self.n] = self.Q
+        Q_bar[(self.N-1)*self.n:self.N*self.n, (self.N-1)*self.n:self.N*self.n] = self.P  # terminal cost
+        
+        # R_bar: block diagonal of R
+        R_bar = np.kron(np.eye(self.N), self.R)  
+        self.H=2*(R_bar+self.S_bar.T@Q_bar@self.S_bar)
+        self.F=2*(self.T_bar@Q_bar@self.S_bar)
+
+    
+
+
+        
         
         
