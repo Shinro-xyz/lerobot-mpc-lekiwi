@@ -77,3 +77,10 @@ class Plant(ABC):
             The next state or result of the step.
         """
         pass
+
+class StateEstimator(ABC):
+    @abstractmethod
+    def estimate(self,measurement:Any,control_input:Any)->Any:
+        pass
+    def reset(self):
+        pass
