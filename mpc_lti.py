@@ -2,9 +2,10 @@ import numpy as np
 from scipy.sparse import block_diag
 import osqp
 from scipy import sparse
+from components import Controller
 
 
-class MPC_LTI:
+class MPC_LTI(Controller):
     """
     Linear Time-Invariant Model Predictive Control (MPC) solver.
     """

@@ -85,9 +85,16 @@ class HolonomicMobileRobot(Plant):
         return self.state
 
     def get_model(self):
+        """
+        Get the state-space model matrices A and B.
+
+        Returns:
+            A tuple containing the state transition matrix A and the input matrix B.
+        """
         A=np.eye(3)
         B=self.dt*np.eye(3)
         return A,B
+
         
 
         
