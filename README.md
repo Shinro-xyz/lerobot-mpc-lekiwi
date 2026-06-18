@@ -17,8 +17,8 @@ flowchart TB
     end
 
     subgraph Plants["Concrete Plants"]
-        HMR -->|3-DOF [x, y, θ]| HMR_desc["Omni-wheel kinematics<br/>step: velocity → wheel speeds"]
-        AR -->|6-DOF Cartesian| AR_desc["FK · Jacobian · IK<br/>step: integrate pose → IK → joints"]
+        HMR -->|"3-DOF (x, y, θ)"| HMR_desc["Omni-wheel kinematics<br/>step: velocity → wheel speeds"]
+        AR -->|"6-DOF Cartesian"| AR_desc["FK · Jacobian · IK<br/>step: integrate pose → IK → joints"]
         AR --> SO[SO-ARM100]
         SO -->|position-controlled servos| SO_desc["Inherits ArmRobot<br/>just configures params"]
     end
