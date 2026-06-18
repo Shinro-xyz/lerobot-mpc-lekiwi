@@ -17,6 +17,11 @@ class ArmRobot(Plant):
         A=np.eye(self.num_dof)
         B=self.dt*np.eye(self.num_dof)
         return A,B
+    
+    def step(self, u):
+        self.state = self.state + self.dt * u
+        self.state = np.clip(self.state, self.joint_limits[:, 0], self.joint_limits[:, 1])
+    
     def _homogenous_transform(self,joint_angles:np.ndarray):
         sines,cosines= np.sin(joint_angles), np.cos(joint_angles)
         T=np.zeros((self.num_dof,4,4))
@@ -56,25 +61,37 @@ class ArmRobot(Plant):
         p_endeffector=pos[-1]
         J=np.zeros((6,self.num_dof))
         for i in range(self.num_dof):
-            J[:3,i]=np.cross(self.axes[i],p_endeffector-pos[i])
+            J[:3,i]=np.cross(axes[i],p_endeffector-pos[i])
             J[3:,i]=axes[i]
         return J
 
-    def inverse_kinematics(self,target_pos:np.ndarray,max_iters:int, q_init=None,tol:float=1e-4):
+    def inverse_kinematics(self,target_pose:np.ndarray,max_iters:int=100, q_init=None,tol:float=1e-4, max_step:float=0.2):
         q=q_init if q_init is not None else self.get_state()
         for j in range(max_iters):
             T_cur, positions,axes=self.forward_kinematics(q)
-            pos_err=target_pos[:3,3]-T_cur[:3,3]
-            R_err=target_pos[:3,:3]@T_cur[:3,:3].T
-            angle=np.arccos(np.clip(np.))
+            pos_err=target_pose[:3,3]-T_cur[:3,3]
+            R_err=target_pose[:3,:3]@T_cur[:3,:3].T
+            angle=np.arccos(np.clip((np.trace(R_err)-1)/2,-1,1))
+
+            if angle<tol and np.linalg.norm(pos_err)<tol:
+                break
+
+            axis = np.array([R_err[2,1]-R_err[1,2],
+                                R_err[0,2]-R_err[2,0],
+                                R_err[1,0]-R_err[0,1]])
+
+            if np.linalg.norm(axis) > 1e-6:
+                ori_err = (axis / np.linalg.norm(axis)) * angle
+            else:
+                ori_err = np.zeros(3)
             
-            
-            
-            
+            v = np.concatenate([pos_err, ori_err])  # 6D twist
+          
+            J=self._jacobian(q)
+            # 4. Step toward target
+            dq = np.linalg.pinv(J)@v
+            dq=np.clip(dq,)
+            q = q + dq
+            q = np.clip(q, self.joint_limits[:, 0], self.joint_limits[:, 1])
         
-        
-        
-           
-            
-        
-        
+        return q
