@@ -36,14 +36,26 @@ class ArmRobot(Plant):
             T[i,:3,3]=offset_vector
             T[i,3,3]=1.0
         return T
+
     def forward_kinematics(self,joint_angles:np.ndarray):
         T_joints= self._homogenous_transform(joint_angles)
         T_cumulatative=np.eye(4)
-
+        positions=[]
+        axes=[]
         for i in range(self.num_dof):
             T_cumulatative=T_cumulatative@T_joints[i]
+            axis_local = {'x': [1,0,0], 'y': [0,1,0], 'z': [0,0,1]}[self.axes[i]]
+            z_i = T_cumulatative[:3, :3] @ axis_local
+            positions.append(T_cumulatative[:3, 3])
+            axes.append(z_i)
 
-        return T_cumulatative
+        return T_cumulatative, positions, axes
 
-    def _jacobian(self,)
+    def _jacobian(self,joint_angles:np.ndarray):
+        T_endeffector, pos, axes= self.forward_kinematics(joint_angles)
+        p_endeffector=pos[-1]
+        
+           
+            
+        
         
