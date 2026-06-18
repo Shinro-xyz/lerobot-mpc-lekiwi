@@ -1,6 +1,5 @@
 # Lekiwi MPC — Whole-Body Control Framework
 
-> MPC + kinematics + whole-body control for the lekiwi robot (holonomic base + SO-ARM100 6-DOF arm).
 
 A clean, modular control framework built on three abstract base classes — **Controller**, **Plant**, and **StateEstimator** — with concrete implementations for the lekiwi robot's holonomic base and 6-DOF arm. Designed for the Shinro robotics IDE integration.
 
