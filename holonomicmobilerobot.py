@@ -82,7 +82,7 @@ class HolonomicMobileRobot(Plant):
         Returns:
             The state vector [x, y, theta].
         """
-        return self.state
+        return self.state.copy()
 
     def get_model(self):
         """

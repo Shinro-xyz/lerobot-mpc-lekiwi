@@ -17,10 +17,12 @@ class ArmRobot(Plant):
         A=np.eye(self.num_dof)
         B=self.dt*np.eye(self.num_dof)
         return A,B
-    
-    def step(self, u):
-        self.state = self.state + self.dt * u
-        self.state = np.clip(self.state, self.joint_limits[:, 0], self.joint_limits[:, 1])
+
+    def step(self,u:np.ndarray):
+        self.state+=self.dt*u
+        q=self.inverse_kinematics(self.state)
+        q=np.clip(q,self.joint_limits[:,0],self.joint_limits[:,1])
+        return q
     
     def _homogenous_transform(self,joint_angles:np.ndarray):
         sines,cosines= np.sin(joint_angles), np.cos(joint_angles)
@@ -90,7 +92,7 @@ class ArmRobot(Plant):
             J=self._jacobian(q)
             # 4. Step toward target
             dq = np.linalg.pinv(J)@v
-            dq=np.clip(dq,)
+            dq = np.clip(dq,-max_step,max_step)
             q = q + dq
             q = np.clip(q, self.joint_limits[:, 0], self.joint_limits[:, 1])
         
