@@ -94,15 +94,3 @@ class HolonomicMobileRobot(Plant):
         A=np.eye(3)
         B=self.dt*np.eye(3)
         return A,B
-
-        
-
-        
-        
-
-    
-
-
-        
-        
-        
