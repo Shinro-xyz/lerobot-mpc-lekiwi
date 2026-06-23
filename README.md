@@ -13,7 +13,8 @@ flowchart TB
         C --> LQR[LQR]
         P[Plant ABC] -->|get_state, get_model, step| HMR[HolonomicMobileRobot]
         P --> AR[ArmRobot]
-        SE[StateEstimator ABC]
+        SE[StateEstimator ABC] -->|estimate, reset| KF[KalmanFilter]
+        SE --> LO[LuenbergerObserver]
     end
 
     subgraph Plants["Concrete Plants"]
@@ -29,8 +30,15 @@ flowchart TB
         LQR --> LQR_desc["Regulation / stabilization<br/>DARE solve"]
     end
 
+    subgraph Estimators["Concrete State Estimators"]
+        KF --> KF_desc["Discrete Kalman filter<br/>predict-update cycle"]
+        LO --> LO_desc["Observer dynamics<br/>x̂ = Ax̂ + Bu + L(y − Cx̂)"]
+    end
+
     Controllers -->|u = control input| Plants
     Plants -->|state feedback| Controllers
+    Plants -->|measurements| Estimators
+    Estimators -->|state estimates| Controllers
 
     subgraph Sim["Simulation"]
         MJ[MuJoCo] -->|joint angles| Plants
@@ -57,9 +65,9 @@ Servos
 ### Clean Separation of Concerns
 - **Controller** = algorithm (MPC, PID, LQR)
 - **Plant** = what you're controlling (base, arm)
-- **StateEstimator** = what you measure (extensible)
+- **StateEstimator** = what you measure (KalmanFilter, LuenbergerObserver)
 
-Swap any controller onto any plant — same interface.
+Swap any controller onto any plant, any estimator onto any plant — same interface.
 
 ### Verified Kinematics
 - Forward kinematics via homogeneous transforms
@@ -77,7 +85,8 @@ lerobot-mpc-lekiwi/
 ├── pid.py                     # PID controller with anti-windup
 ├── mpc_lti.py                 # MPC with OSQP QP solver
 ├── lqr.py                     # LQR with DARE solve
-├── ARCHITECTURE.html          # Interactive architecture diagram
+├── kalman_filter.py           # Discrete Kalman filter state estimator
+├── luenberger_observer.py     # Luenberger observer state estimator
 ├── lekiwi-sim/                # MuJoCo simulation files
 │   ├── mjcf_lcmm_robot.xml    # Full robot model
 │   ├── so_arm100.xml          # SO-ARM100 arm model
@@ -125,12 +134,20 @@ print(f'End effector at: {T[:3, 3]}')
 | **MPC_LTI** | Arm (6D Cartesian) | End-effector trajectory — IK handles joint math |
 | **LQR** | Base (3D) | Regulation / stabilization |
 
+## State Estimators
+
+| Estimator | Plant | Use Case |
+|-----------|-------|----------|
+| **KalmanFilter** | Any LTI system | Optimal state estimation with process/measurement noise |
+| **LuenbergerObserver** | Any LTI system | Deterministic state estimation with user-specified gain |
+
 ## Status
 
 - ✅ Base kinematics (3-DOF holonomic)
 - ✅ Arm kinematics (6-DOF: FK, Jacobian, IK)
 - ✅ Cartesian state + IK-in-step pipeline
 - ✅ PID, MPC_LTI, LQR controllers
+- ✅ KalmanFilter, LuenbergerObserver state estimators
 - 🔄 Combined state space (base + arm coupling) — *in progress*
 - 🔄 MuJoCo closed-loop simulation — *in progress*
 - 🔄 Shinro IDE integration — *planned*
