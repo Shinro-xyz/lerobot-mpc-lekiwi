@@ -84,3 +84,6 @@ class StateEstimator(ABC):
         pass
     def reset(self):
         pass
+
+class TrajectoryGenerator(ABC):
+    @abstract
