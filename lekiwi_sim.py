@@ -190,7 +190,7 @@ class LeKiwiSim:
             joint_offsets=link_offsets,
             rot_axes=rot_axes,
         )
-        self.arm._engine = self.engine  # inject MuJoCo backend
+        self.arm.physics_engine(self.engine)  # inject physics backend
 
         # Base: 3 omni wheels, 120° apart, ~0.09m wheel radius
         self.base = HolonomicMobileRobot(
@@ -200,7 +200,7 @@ class LeKiwiSim:
             radius_wheels=0.09,
             dt=dt,
         )
-        self.base._engine = self.engine  # inject MuJoCo backend
+        self.base.physics_engine(self.engine)  # inject physics backend
 
     def reset(self):
         self.engine.reset()

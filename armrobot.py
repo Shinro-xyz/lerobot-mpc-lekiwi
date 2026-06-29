@@ -1,5 +1,6 @@
 import numpy as np
 from components import Plant
+import mujoco
 
 class ArmRobot(Plant):
     """
@@ -24,17 +25,50 @@ class ArmRobot(Plant):
         self.joint_limits=joint_limits
         self.axes=rot_axes
         self._last_joints=np.zeros(num_dof)
-        # Initialize EE state to actual FK position at zero joints
-        T_home, _, _ = self.forward_kinematics(np.zeros(num_dof))
-        self.state = np.array([T_home[0,3], T_home[1,3], T_home[2,3], 0.0, 0.0, 0.0])
+        self._engine = None
+        # State will be initialized properly when physics_engine is called
+        # or on first step. Set a placeholder for now.
+        self.state = np.zeros(6)
+
+    def physics_engine(self, engine):
+        """Attach a physics engine. After this, step()/get_state() use physics."""
+        self._engine = engine
+        # Initialize state from MuJoCo's actual EE position
+        if engine is not None:
+            # Find and cache EE body ID
+            self._ee_body_id = self._find_ee_body_id(engine)
+            if self._ee_body_id >= 0:
+                mujoco.mj_forward(engine.model, engine.data)
+                self.state = np.array([
+                    engine.data.xpos[self._ee_body_id][0],
+                    engine.data.xpos[self._ee_body_id][1],
+                    engine.data.xpos[self._ee_body_id][2],
+                    0.0, 0.0, 0.0
+                ])
+        else:
+            self._ee_body_id = -1
+            # Fallback: initialize from simplified FK
+            T_home, _, _ = self.forward_kinematics(np.zeros(self.num_dof))
+            self.state = np.array([T_home[0,3], T_home[1,3], T_home[2,3], 0.0, 0.0, 0.0])
+
+    def _find_ee_body_id(self, engine):
+        """Find the end-effector body ID in the MuJoCo model."""
+        import mujoco
+        ee_body_id = mujoco.mj_name2id(engine.model, mujoco.mjtObj.mjOBJ_BODY, "Moving_Jaw_08d-v1")
+        if ee_body_id < 0:
+            for bid in range(engine.model.nbody):
+                if "Moving_Jaw" in engine.model.body(bid).name:
+                    ee_body_id = bid
+                    break
+        return ee_body_id
 
     def get_state(self):
         """Returns a copy of the current 6D end-effector pose state.
         
-        If a MuJoCoEngine is attached, reads the actual physics state.
+        If a physics engine is attached, reads the actual EE position from MuJoCo.
         """
-        if hasattr(self, '_engine') and self._engine is not None:
-            return self._engine.get_arm_qpos()
+        if self._engine is not None:
+            return self.state.copy()
         return self.state.copy()
  
     def get_model(self):
@@ -69,7 +103,7 @@ class ArmRobot(Plant):
         """
         Updates the system state based on control input u and returns joint angles.
 
-        If a MuJoCoEngine is attached (via _engine), delegates to physics.
+        If a physics engine is attached, uses it for the Jacobian and physics step.
         Otherwise uses the simple integrator model.
 
         Args:
@@ -77,41 +111,30 @@ class ArmRobot(Plant):
         Returns:
             np.ndarray: Clipped joint angles for the new state.
         """
-        if hasattr(self, '_engine') and self._engine is not None:
+        if self._engine is not None:
             # MuJoCo backend: EE velocity → Jacobian → joint velocity → joint targets
             # Uses MuJoCo's exact Jacobian (mj_jac) for correct mapping
-            import mujoco
             current_joints = self._engine.get_arm_qpos()
             # Get MuJoCo's exact Jacobian at the end effector
-            # Find the EE body (Moving_Jaw_08d-v1)
-            ee_body_name = "Moving_Jaw_08d-v1"
-            ee_body_id = mujoco.mj_name2id(self._engine.model, mujoco.mjtObj.mjOBJ_BODY, ee_body_name)
-            if ee_body_id < 0:
-                # Fallback: find any body with "Moving_Jaw" in name
-                for bid in range(self._engine.model.nbody):
-                    if "Moving_Jaw" in self._engine.model.body(bid).name:
-                        ee_body_id = bid
-                        break
-            # Get Jacobian from MuJoCo
             jacp = np.zeros((3, self._engine.model.nv))
             jacr = np.zeros((3, self._engine.model.nv))
             mujoco.mj_jac(self._engine.model, self._engine.data, jacp, jacr,
-                          self._engine.data.xpos[ee_body_id], ee_body_id)
+                          self._engine.data.xpos[self._ee_body_id], self._ee_body_id)
             # Extract arm-relevant columns (indices 3-8, after 3 drive joints)
             J = np.vstack([jacp[:, 3:9], jacr[:, 3:9]])
             # Map EE velocity to joint velocity via pseudoinverse
             dq = np.linalg.pinv(J) @ u
-            dq = np.clip(dq, -0.2, 0.2)  # step clamp
-            q_target = current_joints + dq
+            # Integrate: joint velocity → joint position target
+            q_target = current_joints + dq * self.dt
             q_target = np.clip(q_target, self.joint_limits[:, 0], self.joint_limits[:, 1])
             # Send to MuJoCo position servos
             self._engine.set_arm_ctrl(q_target)
             self._last_joints = self._engine.get_arm_qpos()
             # Track EE state from MuJoCo's actual position
             self.state = np.array([
-                self._engine.data.xpos[ee_body_id][0],
-                self._engine.data.xpos[ee_body_id][1],
-                self._engine.data.xpos[ee_body_id][2],
+                self._engine.data.xpos[self._ee_body_id][0],
+                self._engine.data.xpos[self._ee_body_id][1],
+                self._engine.data.xpos[self._ee_body_id][2],
                 0.0, 0.0, 0.0
             ])
             return self._last_joints

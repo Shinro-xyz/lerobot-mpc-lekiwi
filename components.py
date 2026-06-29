@@ -90,6 +90,18 @@ class Plant(ABC):
         """
         pass
 
+    @abstractmethod
+    def physics_engine(self, engine: Any, *args: Any, **kwargs: Any)-> Any:
+        """
+        Attach a physics engine to the plant.
+
+        Currently designed for MuJoCoEngine. The interface is engine-agnostic
+        but the implementation in ArmRobot uses mujoco.mj_jac and other
+        MuJoCo-specific APIs. If a different engine is needed later, the
+        implementation must be updated to match.
+        """
+        pass
+
 class StateEstimator(ABC):
     """
     Abstract base class for state estimators.

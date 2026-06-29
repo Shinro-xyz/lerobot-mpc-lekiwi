@@ -26,6 +26,11 @@ class HolonomicMobileRobot(Plant):
         self.dt=dt
         self.state=np.zeros(3, dtype=np.float64)
         self.A_kinematics, self.A_pinv_kin=self.mobilerobotkinematics()
+        self._engine = None
+
+    def physics_engine(self, engine):
+        """Attach a physics engine. After this, step()/get_state() use physics."""
+        self._engine = engine
 
 
     def mobilerobotkinematics(self):
@@ -50,9 +55,8 @@ class HolonomicMobileRobot(Plant):
         """
         Update robot state and compute wheel speeds for a given world-frame velocity.
 
-        If a MuJoCoEngine is attached (via _engine), the arm uses MuJoCo physics
-        but the base uses the simple integrator (omni-wheel contact physics is
-        unreliable with simplified collision geoms).
+        If a physics engine is attached, uses it for MuJoCo physics.
+        Otherwise uses the simple integrator.
 
         Args:
             u_world: Desired velocity vector in world coordinates.
@@ -60,7 +64,7 @@ class HolonomicMobileRobot(Plant):
         Returns:
             Calculated wheel speeds.
         """
-        if hasattr(self, '_engine') and self._engine is not None:
+        if self._engine is not None:
             # Base: kinematic integrator
             # The arm uses MuJoCo physics; the base is purely kinematic.
             theta = self.state[2]
