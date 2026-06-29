@@ -165,18 +165,23 @@ class LeKiwiSim:
 
         self.engine = MuJoCoEngine(dt=dt)
 
-        # Arm: 6-DOF, limits from MuJoCo, offsets from the MJCF model
-        # (these match the SO-ARM100 kinematics in arm_plant.py)
+        # Arm: 6-DOF, limits from MuJoCo, offsets and axes from the MJCF model
+        # Local rotation axes (from MJCF joint axis):
+        #   Rotation: Y, Pitch: Z, Elbow: Z, Wrist_Pitch: X, Wrist_Roll: Z, Jaw: Z
+        rot_axes = ["y", "z", "z", "x", "z", "z"]
+
+        # Link offsets (joint_i → joint_{i+1}) in world frame at q=0,
+        # extracted from MJCF body positions + joint positions.
+        # These are the translation from each joint to the next in the
+        # world frame when all joints are at zero.
         link_offsets = np.array([
-            [0.0388,  0.0,     0.0624],
-            [-0.0304, -0.0183, -0.0542],
-            [-0.1126, -0.028,   0.0],
-            [-0.1349,  0.0052,  0.0],
-            [0.0,    -0.0611,  0.0181],
-            [0.0,     0.0,     0.05],
+            [0.018300,  0.030600,  0.052200],   # Rotation → Pitch
+            [-0.001500, -0.114582,  0.018082],  # Pitch → Elbow
+            [-0.001500,  0.132932,  0.028720],  # Elbow → Wrist_Pitch
+            [-0.020100,  0.025822, -0.055375],  # Wrist_Pitch → Wrist_Roll
+            [0.019800,  0.026631, -0.013098],   # Wrist_Roll → Jaw
+            [0.0,        0.0,       0.0],        # Jaw → EE (gripper tip)
         ])
-        # All arm joints in the MJCF rotate about Z in the local frame
-        rot_axes = ["z"] * 6
 
         self.arm = ArmRobot(
             num_dof=6,
