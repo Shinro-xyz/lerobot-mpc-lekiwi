@@ -153,6 +153,9 @@ class MuJoCoEngine:
             self.data.qpos[:] = qpos
         else:
             self.data.qpos[:] = 0.0
+            # Free joint quaternion must be identity (not zero!)
+            if self.has_free_joint:
+                self.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
         self.data.qvel[:] = 0.0
         mujoco.mj_forward(self.model, self.data)
 

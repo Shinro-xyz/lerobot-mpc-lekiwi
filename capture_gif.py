@@ -53,7 +53,6 @@ OUTPUT_PATH = str(HERE / "lekiwi_demo.gif")
 
 from lekiwi_sim import LeKiwiSim
 from lqr import LQR
-from armrobot import ArmRobot
 
 
 # ── Trajectory presets ──────────────────────────────────────────────────────
@@ -249,19 +248,6 @@ sim = LeKiwiSim(dt=0.02, xml_string=xml_with_freejoint, assets=assets)
 sim.reset()
 
 # ── Base controller: LQR or MPC ────────────────────────────────────────────
-# Fallback arm for IK (computes joint targets from desired EE pose)
-# The FK model doesn't match MuJoCo's mesh exactly, but IK is seeded from
-# current MuJoCo joints so it converges to a valid solution.
-arm_fallback = ArmRobot(6, 0.02,
-    np.array([[-3.0, 3.0], [-3.1416, 3.14], [-3.14, 3.1416],
-              [-3.0, 3.14], [-3.1416, 3.1416], [-3.14, 3.0]]),
-    np.array([[0.018300, 0.030600, 0.052200],
-              [-0.001500, -0.114582, 0.018082],
-              [-0.001500, 0.132932, 0.028720],
-              [-0.020100, 0.025822, -0.055375],
-              [0.019800, 0.026631, -0.013098],
-              [0.0, 0.0, 0.0]]),
-    ["y", "z", "z", "x", "z", "z"])
 A_base = np.eye(3)
 B_base = 0.02 * np.eye(3)
 Q_base = np.diag([100.0, 100.0, 50.0])
@@ -465,8 +451,9 @@ for step in range(total_steps):
 
     # ── Get true states ──
     true_base = sim.base.get_state()
-    # Read real EE position from MuJoCo (not the broken fallback FK model)
-    true_ee = sim.arm.get_state()[:3]
+    # Read real EE position directly from MuJoCo (sim.arm.get_state() is stale
+    # because we use set_arm_ctrl() directly, not sim.arm.step())
+    true_ee = sim.engine.data.xpos[sim.arm._ee_body_id].copy()
 
     # ── Add sensor noise ──
     noisy_base = true_base + np.random.normal(
@@ -484,25 +471,42 @@ for step in range(total_steps):
     # ── Arm: EMA estimator ──
     arm_estimated_ee[0] = ALPHA_ARM * noisy_ee + (1 - ALPHA_ARM) * arm_estimated_ee[0]
 
-    # ── Arm: MuJoCo-based IK (damped least-squares) ──
+    # ── Arm: MuJoCo-based iterative IK (converges to correct joint targets) ──
     target_ee = ee_schedule[step]
     current_ee = sim.engine.data.xpos[sim.arm._ee_body_id].copy()
     error = target_ee[:3] - current_ee
     if np.linalg.norm(error) > 0.001:
-        current_joints = sim.engine.get_arm_qpos().copy()
-        # Get MuJoCo's exact Jacobian at current config
-        jacp = np.zeros((3, sim.engine.model.nv))
-        jacr = np.zeros((3, sim.engine.model.nv))
-        mujoco.mj_jac(sim.engine.model, sim.engine.data, jacp, jacr,
-                      sim.engine.data.xpos[sim.arm._ee_body_id], sim.arm._ee_body_id)
-        arm_jac_start = 9 if sim.engine.has_free_joint else 3
-        J = jacp[:, arm_jac_start:arm_jac_start + 6]
-        # Damped least-squares: dq = J^T (J J^T + λ²I)⁻¹ e
-        lam = 0.01  # low damping for fast convergence
-        JJT = J @ J.T
-        dq = J.T @ np.linalg.solve(JJT + lam**2 * np.eye(3), error)
-        joint_targets = current_joints + dq
-        joint_targets = np.clip(joint_targets, sim.engine.arm_limits[:, 0], sim.engine.arm_limits[:, 1])
+        # Save original qpos so position servo has error to track
+        original_qpos = sim.engine.get_arm_qpos().copy()
+        # Iterative damped least-squares IK on MuJoCo's real Jacobian
+        current_joints = original_qpos.copy()
+        for _ in range(10):
+            # Get MuJoCo's exact Jacobian at current config
+            jacp = np.zeros((3, sim.engine.model.nv))
+            jacr = np.zeros((3, sim.engine.model.nv))
+            mujoco.mj_jac(sim.engine.model, sim.engine.data, jacp, jacr,
+                          sim.engine.data.xpos[sim.arm._ee_body_id], sim.arm._ee_body_id)
+            arm_jac_start = 9 if sim.engine.has_free_joint else 3
+            J = jacp[:, arm_jac_start:arm_jac_start + 6]
+            # Damped least-squares: dq = J^T (J J^T + λ²I)⁻¹ e
+            lam = 0.1
+            JJT = J @ J.T
+            dq = J.T @ np.linalg.solve(JJT + lam**2 * np.eye(3), error)
+            dq = np.clip(dq, -0.5, 0.5)
+            current_joints = current_joints + dq
+            current_joints = np.clip(current_joints, sim.engine.arm_limits[:, 0], sim.engine.arm_limits[:, 1])
+            # Simulate forward to update Jacobian for next iteration
+            sim.engine.data.qpos[sim.engine.arm_qpos_slice] = current_joints
+            mujoco.mj_forward(sim.engine.model, sim.engine.data)
+            # Recompute error
+            current_ee = sim.engine.data.xpos[sim.arm._ee_body_id].copy()
+            error = target_ee[:3] - current_ee
+            if np.linalg.norm(error) < 0.001:
+                break
+        joint_targets = current_joints
+        # Restore original qpos so the position servo has error to track
+        sim.engine.data.qpos[sim.engine.arm_qpos_slice] = original_qpos
+        mujoco.mj_forward(sim.engine.model, sim.engine.data)
     else:
         joint_targets = sim.engine.get_arm_qpos()
     sim.engine.set_arm_ctrl(joint_targets)
