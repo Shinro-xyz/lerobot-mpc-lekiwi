@@ -3,7 +3,7 @@
 LeKiwi pick-and-place demo — live viewer + growing plot + optional GIF capture.
 
 Architecture:
-  Base: LQR controller tracks waypoints in world frame [x, y, theta]
+  Base: LQR or MPC controller tracks waypoints in world frame [x, y, theta]
   Arm:  P-controller in EE space → fallback FK/IK → mirror joints to MuJoCo
   Gripper: Direct jaw position command
 
@@ -12,9 +12,11 @@ Architecture:
   Joint positions are mirrored to MuJoCo for rendering.
 
 Usage:
-  python capture_gif.py              # live viewer + plot
-  python capture_gif.py --gif        # render to GIF (headless)
-  python capture_gif.py --gif --fast # render to GIF, fewer frames
+  python capture_gif.py                          # live viewer + plot (LQR)
+  python capture_gif.py --controller mpc         # live viewer + plot (MPC)
+  python capture_gif.py --gif                     # render to GIF (headless)
+  python capture_gif.py --gif --fast              # render to GIF, fewer frames
+  python capture_gif.py --controller mpc --gif    # MPC + GIF
 """
 import os
 import sys
@@ -22,6 +24,13 @@ import sys
 # ── Parse args ──────────────────────────────────────────────────────────────
 RENDER_GIF = "--gif" in sys.argv
 FAST = "--fast" in sys.argv
+CONTROLLER = "lqr"  # default
+TRAJECTORY = "straight"  # default
+for i, arg in enumerate(sys.argv):
+    if arg == "--controller" and i + 1 < len(sys.argv):
+        CONTROLLER = sys.argv[i + 1]
+    elif arg == "--trajectory" and i + 1 < len(sys.argv):
+        TRAJECTORY = sys.argv[i + 1]
 
 # Set MuJoCo GL backend BEFORE importing mujoco
 if RENDER_GIF:
@@ -47,33 +56,64 @@ from lqr import LQR
 from armrobot import ArmRobot
 
 
-# ── EE Pose Trajectory ──────────────────────────────────────────────────────
-EE_KEYFRAMES = [
-    (50,  np.array([0.015,  0.101,  0.031, 0.0, 0.0, 0.0])),
-    (100, np.array([0.015,  0.101, -0.050, 0.0, 0.0, 0.0])),
-    (50,  np.array([0.015,  0.101, -0.050, 0.0, 0.0, 0.0])),
-    (100, np.array([0.015,  0.101,  0.100, 0.0, 0.0, 0.0])),
-    (200, np.array([0.015,  0.101,  0.100, 0.0, 0.0, 0.0])),
-    (100, np.array([0.015,  0.101, -0.050, 0.0, 0.0, 0.0])),
-    (50,  np.array([0.015,  0.101, -0.050, 0.0, 0.0, 0.0])),
-    (100, np.array([0.015,  0.101,  0.031, 0.0, 0.0, 0.0])),
-]
-
-GRIP_SCHEDULE = [
-    (150, 0.5),
-    (450, 0.0),
-]
-
-BASE_WAYPOINTS = [
-    (0.0, 0.0, 0.0),
-    (0.4, 0.0, 0.0),
-    (0.4, 0.0, 0.0),
-    (0.4, 0.0, 0.0),
-    (1.2, 0.0, 0.0),
-    (1.2, 0.0, 0.0),
-    (1.2, 0.0, 0.0),
-]
-BASE_WAYPOINT_STEPS = [50, 50, 150, 100, 200, 150, 100]
+# ── Trajectory presets ──────────────────────────────────────────────────────
+if TRAJECTORY == "triangle":
+    # Straight forward, diagonal, back to origin
+    BASE_WAYPOINTS = [
+        (0.0, 0.0, 0.0),
+        (0.8, 0.0, 0.0),
+        (0.8, 0.0, 0.0),
+        (0.8, 0.0, 0.0),
+        (1.2, 0.6, 0.0),
+        (1.2, 0.6, 0.0),
+        (1.2, 0.6, 0.0),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0),
+    ]
+    BASE_WAYPOINT_STEPS = [50, 50, 100, 100, 100, 100, 100, 100, 100, 100]
+    EE_KEYFRAMES = [
+        (50,  np.array([0.015,  0.150,  0.141, 0.0, 0.0, 0.0])),  # home
+        (100, np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # reach down
+        (50,  np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # hold
+        (100, np.array([0.015,  0.150,  0.300, 0.0, 0.0, 0.0])),  # lift up
+        (200, np.array([0.015,  0.150,  0.300, 0.0, 0.0, 0.0])),  # hold up
+        (100, np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # lower down
+        (50,  np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # hold
+        (100, np.array([0.015,  0.150,  0.141, 0.0, 0.0, 0.0])),  # back to home
+        (50,  np.array([0.015,  0.150,  0.141, 0.0, 0.0, 0.0])),  # hold
+        (100, np.array([0.015,  0.150,  0.141, 0.0, 0.0, 0.0])),  # hold
+    ]
+    GRIP_SCHEDULE = [
+        (150, 0.5),
+        (450, 0.0),
+    ]
+else:
+    # Straight line (default)
+    BASE_WAYPOINTS = [
+        (0.0, 0.0, 0.0),
+        (0.4, 0.0, 0.0),
+        (0.4, 0.0, 0.0),
+        (0.4, 0.0, 0.0),
+        (1.2, 0.0, 0.0),
+        (1.2, 0.0, 0.0),
+        (1.2, 0.0, 0.0),
+    ]
+    BASE_WAYPOINT_STEPS = [50, 50, 150, 100, 200, 150, 100]
+    EE_KEYFRAMES = [
+        (50,  np.array([0.015,  0.150,  0.141, 0.0, 0.0, 0.0])),  # home
+        (100, np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # reach down
+        (50,  np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # hold
+        (100, np.array([0.015,  0.150,  0.300, 0.0, 0.0, 0.0])),  # lift up
+        (200, np.array([0.015,  0.150,  0.300, 0.0, 0.0, 0.0])),  # hold up
+        (100, np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # lower down
+        (50,  np.array([0.015,  0.150,  0.050, 0.0, 0.0, 0.0])),  # hold
+        (100, np.array([0.015,  0.150,  0.141, 0.0, 0.0, 0.0])),  # back to home
+    ]
+    GRIP_SCHEDULE = [
+        (150, 0.5),
+        (450, 0.0),
+    ]
 
 # ── Build schedules ─────────────────────────────────────────────────────────
 total_steps = sum(k[0] for k in EE_KEYFRAMES)
@@ -208,37 +248,46 @@ for fname in mesh_dir.iterdir():
 sim = LeKiwiSim(dt=0.02, xml_string=xml_with_freejoint, assets=assets)
 sim.reset()
 
-# ── Fallback arm (FK/IK, no MuJoCo physics) ─────────────────────────────────
-NUM_DOF = 6
-DT = 0.02
-JOINT_LIMITS = np.array([
-    [-3.0,   3.0],
-    [-3.1416, 3.14],
-    [-3.14,  3.1416],
-    [-3.0,   3.14],
-    [-3.1416, 3.1416],
-    [-3.14,  3.0],
-])
-LINK_OFFSETS = np.array([
-    [0.018300,  0.030600,  0.052200],
-    [-0.001500, -0.114582,  0.018082],
-    [-0.001500,  0.132932,  0.028720],
-    [-0.020100,  0.025822, -0.055375],
-    [0.019800,  0.026631, -0.013098],
-    [0.0,        0.0,       0.0],
-])
-ROT_AXES = ["y", "z", "z", "x", "z", "z"]
-
-arm_fallback = ArmRobot(NUM_DOF, DT, JOINT_LIMITS, LINK_OFFSETS, ROT_AXES)
-T_home, _, _ = arm_fallback.forward_kinematics(np.zeros(6))
-arm_fallback.state = np.array([T_home[0,3], T_home[1,3], T_home[2,3], 0.0, 0.0, 0.0])
-
-# ── LQR for base ────────────────────────────────────────────────────────────
+# ── Base controller: LQR or MPC ────────────────────────────────────────────
+# Fallback arm for IK (computes joint targets from desired EE pose)
+# The FK model doesn't match MuJoCo's mesh exactly, but IK is seeded from
+# current MuJoCo joints so it converges to a valid solution.
+arm_fallback = ArmRobot(6, 0.02,
+    np.array([[-3.0, 3.0], [-3.1416, 3.14], [-3.14, 3.1416],
+              [-3.0, 3.14], [-3.1416, 3.1416], [-3.14, 3.0]]),
+    np.array([[0.018300, 0.030600, 0.052200],
+              [-0.001500, -0.114582, 0.018082],
+              [-0.001500, 0.132932, 0.028720],
+              [-0.020100, 0.025822, -0.055375],
+              [0.019800, 0.026631, -0.013098],
+              [0.0, 0.0, 0.0]]),
+    ["y", "z", "z", "x", "z", "z"])
 A_base = np.eye(3)
 B_base = 0.02 * np.eye(3)
 Q_base = np.diag([100.0, 100.0, 50.0])
 R_base = np.diag([0.1, 0.1, 0.1])
-base_ctrl = LQR(Q_base, R_base, A_base, B_base)
+
+if CONTROLLER == "mpc":
+    from mpc_lti import MPC_LTI
+    base_ctrl = MPC_LTI(
+        horizon=15,
+        control_cost_matrix=R_base,
+        state_cost_matrix=Q_base,
+        A_dynamics=A_base,
+        B_dynamics=B_base,
+        terminal_cost=Q_base,
+    )
+    # Constraints: vx, vy ∈ [-0.5, 0.5], ω ∈ [-1.0, 1.0]
+    base_ctrl.constraints(
+        np.vstack([np.eye(3), -np.eye(3)]),
+        np.array([0.5, 0.5, 1.0, 0.5, 0.5, 1.0]),
+        np.array([-0.5, -0.5, -1.0, -0.5, -0.5, -1.0]),
+    )
+    CTRL_LABEL = "MPC"
+else:
+    from lqr import LQR
+    base_ctrl = LQR(Q_base, R_base, A_base, B_base)
+    CTRL_LABEL = "LQR"
 
 # ── Sensor noise ────────────────────────────────────────────────────────────
 NOISE_BASE_POS = 0.02    # m std for x, y
@@ -306,7 +355,10 @@ for ax in axes.flat:
 ax_base_track, ax_base_obs = axes[0]
 ax_base_track.set_title('Base — Ref / Noisy Meas / Estimated / True', color='white', fontsize=9, fontweight='bold')
 ax_base_track.set_ylabel('Position (m)', color='white', fontsize=8)
-ax_base_track.set_ylim(-0.1, 1.5)
+if TRAJECTORY == "triangle":
+    ax_base_track.set_ylim(-0.2, 1.5)
+else:
+    ax_base_track.set_ylim(-0.1, 1.5)
 line_br_x, = ax_base_track.plot([], [], '#ff6b6b', lw=1.5, ls='--', label='x ref')
 line_br_y, = ax_base_track.plot([], [], '#4ecdc4', lw=1.5, ls='--', label='y ref')
 line_br_t, = ax_base_track.plot([], [], '#ffe66d', lw=1.5, ls='--', label='θ ref')
@@ -360,7 +412,7 @@ ax_arm_obs.legend(loc='upper left', fontsize=7, labelcolor='white', framealpha=0
 
 # ── Row 2: Control effort ──
 ax_base_ctrl, ax_arm_ctrl = axes[2]
-ax_base_ctrl.set_title('Base — LQR Control Effort (u = −Kx̂)', color='white', fontsize=9, fontweight='bold')
+ax_base_ctrl.set_title(f'Base — {CTRL_LABEL} Control Effort (u = −Kx̂)', color='white', fontsize=9, fontweight='bold')
 ax_base_ctrl.set_ylabel('Velocity (m/s, rad/s)', color='white', fontsize=8)
 ax_base_ctrl.set_xlabel('Time (s)', color='white', fontsize=8)
 ax_base_ctrl.set_ylim(-0.6, 0.6)
@@ -370,8 +422,8 @@ line_bc_y, = ax_base_ctrl.plot([], [], '#4ecdc4', lw=1.5, label='vy')
 line_bc_t, = ax_base_ctrl.plot([], [], '#ffe66d', lw=1.5, label='ω')
 ax_base_ctrl.legend(loc='upper left', fontsize=7, labelcolor='white', framealpha=0.3)
 
-ax_arm_ctrl.set_title('Arm — P-Control Effort (u = Kp·ê)', color='white', fontsize=9, fontweight='bold')
-ax_arm_ctrl.set_ylabel('EE Velocity (m/s)', color='white', fontsize=8)
+ax_arm_ctrl.set_title('Arm — Position Error (ref − true)', color='white', fontsize=9, fontweight='bold')
+ax_arm_ctrl.set_ylabel('Position Error (m)', color='white', fontsize=8)
 ax_arm_ctrl.set_xlabel('Time (s)', color='white', fontsize=8)
 ax_arm_ctrl.set_ylim(-0.4, 0.4)
 ax_arm_ctrl.axhline(0, color='#555', lw=0.5)
@@ -391,10 +443,16 @@ grip_idx = 0
 # Open MuJoCo viewer (only in live mode)
 if not RENDER_GIF:
     viewer = mujoco.viewer.launch_passive(sim.engine.model, sim.engine.data)
-    viewer.cam.distance = 2.5
-    viewer.cam.azimuth = 135
-    viewer.cam.elevation = -30
-    viewer.cam.lookat[:] = [0.6, 0.0, 0.1]
+    if TRAJECTORY == "triangle":
+        viewer.cam.distance = 3.0
+        viewer.cam.azimuth = 135
+        viewer.cam.elevation = -30
+        viewer.cam.lookat[:] = [0.6, 0.3, 0.1]
+    else:
+        viewer.cam.distance = 2.5
+        viewer.cam.azimuth = 135
+        viewer.cam.elevation = -30
+        viewer.cam.lookat[:] = [0.6, 0.0, 0.1]
 else:
     viewer = None
 
@@ -407,7 +465,8 @@ for step in range(total_steps):
 
     # ── Get true states ──
     true_base = sim.base.get_state()
-    true_ee = arm_fallback.get_state()[:3]
+    # Read real EE position from MuJoCo (not the broken fallback FK model)
+    true_ee = sim.arm.get_state()[:3]
 
     # ── Add sensor noise ──
     noisy_base = true_base + np.random.normal(
@@ -425,14 +484,28 @@ for step in range(total_steps):
     # ── Arm: EMA estimator ──
     arm_estimated_ee[0] = ALPHA_ARM * noisy_ee + (1 - ALPHA_ARM) * arm_estimated_ee[0]
 
-    # ── Arm: P-controller using ESTIMATED state ──
+    # ── Arm: MuJoCo-based IK (damped least-squares) ──
     target_ee = ee_schedule[step]
-    vel = 2.0 * (target_ee[:3] - arm_estimated_ee[0])
-    vel = np.clip(vel, [-0.3, -0.3, -0.3], [0.3, 0.3, 0.3])
-    joints = arm_fallback.step(np.concatenate([vel, [0, 0, 0]]))
-
-    # Mirror to MuJoCo
-    sim.engine.set_arm_ctrl(joints)
+    current_ee = sim.engine.data.xpos[sim.arm._ee_body_id].copy()
+    error = target_ee[:3] - current_ee
+    if np.linalg.norm(error) > 0.001:
+        current_joints = sim.engine.get_arm_qpos().copy()
+        # Get MuJoCo's exact Jacobian at current config
+        jacp = np.zeros((3, sim.engine.model.nv))
+        jacr = np.zeros((3, sim.engine.model.nv))
+        mujoco.mj_jac(sim.engine.model, sim.engine.data, jacp, jacr,
+                      sim.engine.data.xpos[sim.arm._ee_body_id], sim.arm._ee_body_id)
+        arm_jac_start = 9 if sim.engine.has_free_joint else 3
+        J = jacp[:, arm_jac_start:arm_jac_start + 6]
+        # Damped least-squares: dq = J^T (J J^T + λ²I)⁻¹ e
+        lam = 0.01  # low damping for fast convergence
+        JJT = J @ J.T
+        dq = J.T @ np.linalg.solve(JJT + lam**2 * np.eye(3), error)
+        joint_targets = current_joints + dq
+        joint_targets = np.clip(joint_targets, sim.engine.arm_limits[:, 0], sim.engine.arm_limits[:, 1])
+    else:
+        joint_targets = sim.engine.get_arm_qpos()
+    sim.engine.set_arm_ctrl(joint_targets)
     if grip_idx < len(GRIP_SCHEDULE) and step >= GRIP_SCHEDULE[grip_idx][0]:
         jaw_pos = GRIP_SCHEDULE[grip_idx][1]
         ctrl = sim.engine.data.ctrl.copy()
@@ -440,9 +513,13 @@ for step in range(total_steps):
         sim.engine.set_full_ctrl(ctrl)
         grip_idx += 1
 
-    # ── Base: LQR using ESTIMATED state ──
+    # ── Base: controller using ESTIMATED state ──
     target_pose = base_schedule[step]
-    base_vel = base_ctrl.compute(estimated_base, target_pose)
+    if CONTROLLER == "mpc":
+        error = estimated_base - target_pose
+        base_vel = base_ctrl.compute(error)
+    else:
+        base_vel = base_ctrl.compute(estimated_base, target_pose)
     base_vel = np.clip(base_vel, [-0.5, -0.5, -1.0], [0.5, 0.5, 1.0])
     sim.base.step(base_vel)
 
@@ -462,7 +539,7 @@ for step in range(total_steps):
     log_arm_noisy.append(noisy_ee.copy())
     log_arm_estimated.append(arm_estimated_ee[0].copy())
     log_arm_error.append((target_ee[:3] - true_ee).copy())
-    log_arm_effort.append(vel[:3].copy())
+    log_arm_effort.append((target_ee[:3] - true_ee).copy())  # position error as effort proxy
 
     # ── Update plot every 5 steps ──
     if step % 5 == 0 and step > 0:
