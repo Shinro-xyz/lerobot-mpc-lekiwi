@@ -1,0 +1,32 @@
+{
+  "languages": {
+    "Python": {
+      "language_servers": ["pyright"],
+      "formatter": {
+        "language_server": {
+          "name": "pyright"
+        }
+      }
+    }
+  },
+  "lsp": {
+    "pyright": {
+      "settings": {
+        "python": {
+          "pythonPath": "/home/adilfaisal01/.pyenv/versions/lebrobot/bin/python3",
+          "venvPath": "/home/adilfaisal01/.pyenv/versions/lebrobot",
+          "analysis": {
+            "typeCheckingMode": "basic",
+            "autoSearchPaths": true,
+            "useLibraryCodeForTypes": true
+          }
+        }
+      }
+    }
+  },
+  "terminal": {
+    "env": {
+      "PYENV_VERSION": "lebrobot"
+    }
+  }
+}

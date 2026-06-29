@@ -60,11 +60,24 @@ class ArmRobot(Plant):
     def step(self,u:np.ndarray):
         """
         Updates the system state based on control input u and returns joint angles.
+
+        If a MuJoCoEngine is attached (via _engine), delegates to physics.
+        Otherwise uses the simple integrator model.
+
         Args:
             u (np.ndarray): 6D control input (velocity/displacement).
         Returns:
             np.ndarray: Clipped joint angles for the new state.
         """
+        if hasattr(self, '_engine') and self._engine is not None:
+            # MuJoCo backend: send position targets to arm actuators
+            self._engine.set_arm_ctrl(u)
+            self._engine.step()
+            self._last_joints = self._engine.get_arm_qpos()
+            self.state = self._last_joints.copy()
+            return self._last_joints
+
+        # Fallback: simple integrator
         self.state+=self.dt*u
         target=self._pose_to_transform(self.state)
         q=self.inverse_kinematics(target)

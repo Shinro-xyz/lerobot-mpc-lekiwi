@@ -50,12 +50,28 @@ class HolonomicMobileRobot(Plant):
         """
         Update robot state and compute wheel speeds for a given world-frame velocity.
 
+        If a MuJoCoEngine is attached (via _engine), delegates to physics.
+        Otherwise uses the simple integrator model.
+
         Args:
             u_world: Desired velocity vector in world coordinates.
 
         Returns:
             Calculated wheel speeds.
         """
+        if hasattr(self, '_engine') and self._engine is not None:
+            # MuJoCo backend: convert world velocity to wheel speeds, send to drive motors
+            theta = self.state[2]
+            c, s = np.cos(theta), np.sin(theta)
+            rot_matrix = np.array([[c, s, 0], [-s, c, 0], [0, 0, 1]])
+            u_body = rot_matrix @ u_world
+            wheel_speeds = (1.0 / self.r) * self.A_kinematics @ u_body
+            self._engine.set_drive_ctrl(wheel_speeds)
+            self._engine.step()
+            self.state = self._engine.get_base_pose()
+            return wheel_speeds
+
+        # Fallback: simple integrator
         theta=self.state[2]
         c, s= np.cos(theta), np.sin(theta)
         rot_matrix= np.array([[c,s,0],[-s,c,0],[0,0,1]])
