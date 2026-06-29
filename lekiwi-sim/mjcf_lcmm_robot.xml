@@ -103,11 +103,6 @@
     <worldbody>
         <light directional="true" pos="-0.5 0.5 3" dir="0 0 -1" />
         <geom pos="0 0 -0.01" size="2 2 0.01" type="plane" rgba="0.8 0.8 0.8 1" friction="0.5 0.005 0.0001" />
-        <!-- Target object: a small box to pick up -->
-        <body name="target_box" pos="0.15 0.0 0.025" euler="0 0 0">
-            <geom name="box_geom" type="box" size="0.02 0.02 0.02" rgba="1 0.5 0 0.9" friction="0.5 0.005 0.0001" />
-            <inertial mass="0.02" pos="0 0 0" fullinertia="1e-6 1e-6 1e-6 0 0 0" />
-        </body>
         <body name="base_plate_layer1-v5-1" pos="0.0 0.0 0.0186" euler="-0.0 0.0 -0.0">
             <site name="red_sphere" pos="0 0 0" size="0.01" rgba="1 0 0 1" type="sphere"/>
             <geom name="base_plate_layer1-v5-1_geom" type="mesh" mesh="base_plate_layer1-v5-1" pos="0 0 0" euler="0 0 0" contype="0" conaffinity="0" />
