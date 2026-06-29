@@ -89,8 +89,103 @@ for n, pose in EE_KEYFRAMES:
 ee_schedule = np.array(ee_schedule)
 
 
+# ── Waypoint markers (colored poles in the 3D scene) ────────────────────────
+def inject_waypoint_markers(xml_string, base_wps, ee_keyframes, base_steps):
+    """Inject colored cylindrical markers into the MJCF XML before loading."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(xml_string)
+    worldbody = root.find('.//worldbody')
+
+    # Collect unique waypoints with their step indices
+    base_markers = []
+    seen_base = set()
+    step = 0
+    for wp, n in zip(base_wps, base_steps):
+        key = tuple(wp)
+        if key not in seen_base:
+            base_markers.append((step, wp))
+            seen_base.add(key)
+        step += n
+
+    ee_markers = []
+    seen_ee = set()
+    step = 0
+    for n, pose in ee_keyframes:
+        key = tuple(pose[:3])
+        if key not in seen_ee:
+            ee_markers.append((step, tuple(pose[:3])))
+            seen_ee.add(key)
+        step += n
+
+    base_colors = [
+        '1 0.4 0.4 0.6', '0.4 1 0.4 0.6', '0.4 0.4 1 0.6',
+        '1 1 0.4 0.6', '1 0.4 1 0.6', '0.4 1 1 0.6', '1 0.7 0.3 0.6',
+    ]
+    ee_colors = [
+        '1 0.6 0.6 0.5', '0.6 1 0.6 0.5', '0.6 0.6 1 0.5',
+        '1 1 0.6 0.5', '1 0.6 1 0.5', '0.6 1 1 0.5',
+        '1 0.8 0.5 0.5', '0.8 0.6 1 0.5',
+    ]
+
+    for i, (_, pos) in enumerate(base_markers):
+        geom = ET.SubElement(worldbody, 'geom')
+        geom.set('type', 'cylinder')
+        geom.set('size', '0.02 0.02 0.3')
+        geom.set('pos', f'{pos[0]} {pos[1]} 0.15')
+        geom.set('rgba', base_colors[i % len(base_colors)])
+        geom.set('contype', '0')
+        geom.set('conaffinity', '0')
+
+    for i, (_, pos) in enumerate(ee_markers):
+        geom = ET.SubElement(worldbody, 'geom')
+        geom.set('type', 'cylinder')
+        geom.set('size', '0.015 0.015 0.2')
+        geom.set('pos', f'{pos[0]} {pos[1]} 0.1')
+        geom.set('rgba', ee_colors[i % len(ee_colors)])
+        geom.set('contype', '0')
+        geom.set('conaffinity', '0')
+
+    return ET.tostring(root, encoding='unicode')
+
+
+def inject_free_joint(xml_string):
+    """Add a free joint to the base body so it moves in the MuJoCo scene."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml_string)
+    worldbody = root.find('.//worldbody')
+    
+    # Find the base body (first child of worldbody that's a body)
+    for child in worldbody:
+        if child.tag == 'body':
+            # Add freejoint as first child
+            fj = ET.Element('freejoint')
+            child.insert(0, fj)
+            break
+    
+    return ET.tostring(root, encoding='unicode')
+
+
 # ── Create sim ──────────────────────────────────────────────────────────────
-sim = LeKiwiSim(dt=0.02)
+# Read MJCF, inject waypoint markers, then load with mesh assets
+from lekiwi_sim import MJCF_PATH, HERE as LEKIWI_HOME
+import xml.etree.ElementTree as ET
+
+with open(MJCF_PATH) as f:
+    base_xml = f.read()
+
+# Inject waypoint markers and free joint into XML
+xml_with_markers = inject_waypoint_markers(base_xml, BASE_WAYPOINTS, EE_KEYFRAMES, BASE_WAYPOINT_STEPS)
+xml_with_freejoint = inject_free_joint(xml_with_markers)
+
+# Collect mesh files as assets for from_xml_string
+mesh_dir = LEKIWI_HOME / 'lekiwi-sim' / 'meshes'
+assets = {}
+for fname in mesh_dir.iterdir():
+    if fname.suffix in ('.stl', '.obj'):
+        assets[fname.name] = fname.read_bytes()
+
+sim = LeKiwiSim(dt=0.02, xml_string=xml_with_freejoint, assets=assets)
 sim.reset()
 
 # ── Fallback arm (FK/IK, no MuJoCo physics) ─────────────────────────────────
@@ -125,11 +220,45 @@ Q_base = np.diag([100.0, 100.0, 50.0])
 R_base = np.diag([0.1, 0.1, 0.1])
 base_ctrl = LQR(Q_base, R_base, A_base, B_base)
 
+# ── Sensor noise ────────────────────────────────────────────────────────────
+NOISE_BASE_POS = 0.02    # m std for x, y
+NOISE_BASE_THETA = 0.05  # rad std for θ
+NOISE_ARM_POS = 0.01     # m std for x, y, z
+
+# ── Luenberger observer for base ────────────────────────────────────────────
+class LuenbergerObserver:
+    """Discrete-time observer: x̂_{k+1} = A x̂_k + B u_k + L (y_k - C x̂_k)"""
+    def __init__(self, A, B, C, L):
+        self.A, self.B, self.C, self.L = A, B, C, L
+        self.x_hat = np.zeros(A.shape[0])
+    def update(self, u, y):
+        x_pred = self.A @ self.x_hat + self.B @ u
+        innovation = y - self.C @ x_pred
+        self.x_hat = x_pred + self.L @ innovation
+        return self.x_hat.copy()
+
+# Observer gain: poles at ~0.1 (faster than LQR closed-loop ~0.37)
+L_obs = np.diag([0.8, 0.8, 0.8])
+base_observer = LuenbergerObserver(np.eye(3), 0.02 * np.eye(3), np.eye(3), L_obs)
+
+# ── Arm EE estimator (exponential moving average) ───────────────────────────
+arm_estimated_ee = [np.zeros(3)]  # list wrapper to avoid Python scoping issues
+ALPHA_ARM = 0.3  # EMA factor (lower = smoother)
+
 # ── Data logging ───────────────────────────────────────────────────────────
 log_time = []
-log_base_error = []
-log_base_control = []
-log_ee_pos = []
+log_base_ref = []       # reference [x, y, θ]
+log_base_actual = []    # true state [x, y, θ]
+log_base_noisy = []     # noisy measurement [x, y, θ]
+log_base_estimated = [] # estimated state [x, y, θ]
+log_base_error = []     # tracking error = ref - true
+log_base_effort = []    # LQR output [vx, vy, ω]
+log_arm_ref = []        # reference EE [x, y, z]
+log_arm_actual = []     # true EE [x, y, z]
+log_arm_noisy = []      # noisy EE measurement [x, y, z]
+log_arm_estimated = []  # estimated EE [x, y, z]
+log_arm_error = []      # tracking error = ref - true
+log_arm_effort = []     # P-controller output [vx, vy, vz]
 
 # ── Plot setup ─────────────────────────────────────────────────────────────
 if RENDER_GIF:
@@ -147,9 +276,9 @@ else:
     frames = None
     viewer_ctx = "launch"  # will open viewer below
 
-fig, axes = plt.subplots(3, 1, figsize=(6, 5), sharex=True)
+fig, axes = plt.subplots(3, 2, figsize=(10, 6.5), sharex=True)
 fig.patch.set_facecolor('#1a1a2e')
-for ax in axes:
+for ax in axes.flat:
     ax.set_facecolor('#16213e')
     ax.tick_params(colors='white', labelsize=7)
     ax.spines['bottom'].set_color('#555')
@@ -157,29 +286,83 @@ for ax in axes:
     ax.spines['left'].set_color('#555')
     ax.spines['right'].set_color('#555')
 
-ax_err, ax_ctrl, ax_ee = axes
-ax_err.set_ylabel('Base Error', color='white', fontsize=8)
-ax_ctrl.set_ylabel('Base Control', color='white', fontsize=8)
-ax_ee.set_ylabel('EE Position', color='white', fontsize=8)
-ax_ee.set_xlabel('Time (s)', color='white', fontsize=8)
+# ── Row 0: Base — reference, noisy measurement, estimated, true ──
+ax_base_track, ax_base_obs = axes[0]
+ax_base_track.set_title('Base — Ref / Noisy Meas / Estimated / True', color='white', fontsize=9, fontweight='bold')
+ax_base_track.set_ylabel('Position (m)', color='white', fontsize=8)
+ax_base_track.set_ylim(-0.1, 1.5)
+line_br_x, = ax_base_track.plot([], [], '#ff6b6b', lw=1.5, ls='--', label='x ref')
+line_br_y, = ax_base_track.plot([], [], '#4ecdc4', lw=1.5, ls='--', label='y ref')
+line_br_t, = ax_base_track.plot([], [], '#ffe66d', lw=1.5, ls='--', label='θ ref')
+line_bn_x, = ax_base_track.plot([], [], '#ff6b6b', lw=0, marker='.', ms=2, alpha=0.4, label='x noisy')
+line_bn_y, = ax_base_track.plot([], [], '#4ecdc4', lw=0, marker='.', ms=2, alpha=0.4, label='y noisy')
+line_bn_t, = ax_base_track.plot([], [], '#ffe66d', lw=0, marker='.', ms=2, alpha=0.4, label='θ noisy')
+line_be_x, = ax_base_track.plot([], [], '#ff6b6b', lw=2.0, label='x est')
+line_be_y, = ax_base_track.plot([], [], '#4ecdc4', lw=2.0, label='y est')
+line_be_t, = ax_base_track.plot([], [], '#ffe66d', lw=2.0, label='θ est')
+line_ba_x, = ax_base_track.plot([], [], '#ff6b6b', lw=0.8, alpha=0.3, label='x true')
+line_ba_y, = ax_base_track.plot([], [], '#4ecdc4', lw=0.8, alpha=0.3, label='y true')
+line_ba_t, = ax_base_track.plot([], [], '#ffe66d', lw=0.8, alpha=0.3, label='θ true')
+ax_base_track.legend(loc='upper left', fontsize=6, labelcolor='white', framealpha=0.3, ncol=2)
 
-line_err_x, = ax_err.plot([], [], '#ff6b6b', lw=1, label='x err')
-line_err_y, = ax_err.plot([], [], '#4ecdc4', lw=1, label='y err')
-line_err_t, = ax_err.plot([], [], '#ffe66d', lw=1, label='θ err')
-ax_err.legend(loc='upper right', fontsize=6, labelcolor='white')
-ax_err.set_ylim(-0.5, 0.5)
+ax_base_obs.set_title('Base — Observer Innovation (y − Cx̂)', color='white', fontsize=9, fontweight='bold')
+ax_base_obs.set_ylabel('Innovation (m, rad)', color='white', fontsize=8)
+ax_base_obs.set_ylim(-0.15, 0.15)
+ax_base_obs.axhline(0, color='#555', lw=0.5)
+line_bo_x, = ax_base_obs.plot([], [], '#ff6b6b', lw=1.0, label='x innov')
+line_bo_y, = ax_base_obs.plot([], [], '#4ecdc4', lw=1.0, label='y innov')
+line_bo_t, = ax_base_obs.plot([], [], '#ffe66d', lw=1.0, label='θ innov')
+ax_base_obs.legend(loc='upper left', fontsize=7, labelcolor='white', framealpha=0.3)
 
-line_ctrl_x, = ax_ctrl.plot([], [], '#ff6b6b', lw=1, label='vx')
-line_ctrl_y, = ax_ctrl.plot([], [], '#4ecdc4', lw=1, label='vy')
-line_ctrl_t, = ax_ctrl.plot([], [], '#ffe66d', lw=1, label='ω')
-ax_ctrl.legend(loc='upper right', fontsize=6, labelcolor='white')
-ax_ctrl.set_ylim(-0.6, 0.6)
+# ── Row 1: Arm — reference, noisy measurement, estimated, true ──
+ax_arm_track, ax_arm_obs = axes[1]
+ax_arm_track.set_title('Arm EE — Ref / Noisy Meas / Estimated / True', color='white', fontsize=9, fontweight='bold')
+ax_arm_track.set_ylabel('Position (m)', color='white', fontsize=8)
+ax_arm_track.set_ylim(-0.15, 0.25)
+line_ar_x, = ax_arm_track.plot([], [], '#ff6b6b', lw=1.5, ls='--', label='x ref')
+line_ar_y, = ax_arm_track.plot([], [], '#4ecdc4', lw=1.5, ls='--', label='y ref')
+line_ar_z, = ax_arm_track.plot([], [], '#45b7d1', lw=1.5, ls='--', label='z ref')
+line_an_x, = ax_arm_track.plot([], [], '#ff6b6b', lw=0, marker='.', ms=2, alpha=0.4, label='x noisy')
+line_an_y, = ax_arm_track.plot([], [], '#4ecdc4', lw=0, marker='.', ms=2, alpha=0.4, label='y noisy')
+line_an_z, = ax_arm_track.plot([], [], '#45b7d1', lw=0, marker='.', ms=2, alpha=0.4, label='z noisy')
+line_ae_x, = ax_arm_track.plot([], [], '#ff6b6b', lw=2.0, label='x est')
+line_ae_y, = ax_arm_track.plot([], [], '#4ecdc4', lw=2.0, label='y est')
+line_ae_z, = ax_arm_track.plot([], [], '#45b7d1', lw=2.0, label='z est')
+line_aa_x, = ax_arm_track.plot([], [], '#ff6b6b', lw=0.8, alpha=0.3, label='x true')
+line_aa_y, = ax_arm_track.plot([], [], '#4ecdc4', lw=0.8, alpha=0.3, label='y true')
+line_aa_z, = ax_arm_track.plot([], [], '#45b7d1', lw=0.8, alpha=0.3, label='z true')
+ax_arm_track.legend(loc='upper left', fontsize=6, labelcolor='white', framealpha=0.3, ncol=2)
 
-line_ee_x, = ax_ee.plot([], [], '#ff6b6b', lw=1, label='x')
-line_ee_y, = ax_ee.plot([], [], '#4ecdc4', lw=1, label='y')
-line_ee_z, = ax_ee.plot([], [], '#45b7d1', lw=1, label='z')
-ax_ee.legend(loc='upper right', fontsize=6, labelcolor='white')
-ax_ee.set_ylim(-0.15, 0.25)
+ax_arm_obs.set_title('Arm EE — Estimator Innovation (meas − est)', color='white', fontsize=9, fontweight='bold')
+ax_arm_obs.set_ylabel('Innovation (m)', color='white', fontsize=8)
+ax_arm_obs.set_ylim(-0.08, 0.08)
+ax_arm_obs.axhline(0, color='#555', lw=0.5)
+line_ao_x, = ax_arm_obs.plot([], [], '#ff6b6b', lw=1.0, label='x innov')
+line_ao_y, = ax_arm_obs.plot([], [], '#4ecdc4', lw=1.0, label='y innov')
+line_ao_z, = ax_arm_obs.plot([], [], '#45b7d1', lw=1.0, label='z innov')
+ax_arm_obs.legend(loc='upper left', fontsize=7, labelcolor='white', framealpha=0.3)
+
+# ── Row 2: Control effort ──
+ax_base_ctrl, ax_arm_ctrl = axes[2]
+ax_base_ctrl.set_title('Base — LQR Control Effort (u = −Kx̂)', color='white', fontsize=9, fontweight='bold')
+ax_base_ctrl.set_ylabel('Velocity (m/s, rad/s)', color='white', fontsize=8)
+ax_base_ctrl.set_xlabel('Time (s)', color='white', fontsize=8)
+ax_base_ctrl.set_ylim(-0.6, 0.6)
+ax_base_ctrl.axhline(0, color='#555', lw=0.5)
+line_bc_x, = ax_base_ctrl.plot([], [], '#ff6b6b', lw=1.5, label='vx')
+line_bc_y, = ax_base_ctrl.plot([], [], '#4ecdc4', lw=1.5, label='vy')
+line_bc_t, = ax_base_ctrl.plot([], [], '#ffe66d', lw=1.5, label='ω')
+ax_base_ctrl.legend(loc='upper left', fontsize=7, labelcolor='white', framealpha=0.3)
+
+ax_arm_ctrl.set_title('Arm — P-Control Effort (u = Kp·ê)', color='white', fontsize=9, fontweight='bold')
+ax_arm_ctrl.set_ylabel('EE Velocity (m/s)', color='white', fontsize=8)
+ax_arm_ctrl.set_xlabel('Time (s)', color='white', fontsize=8)
+ax_arm_ctrl.set_ylim(-0.4, 0.4)
+ax_arm_ctrl.axhline(0, color='#555', lw=0.5)
+line_ac_x, = ax_arm_ctrl.plot([], [], '#ff6b6b', lw=1.5, label='vx')
+line_ac_y, = ax_arm_ctrl.plot([], [], '#4ecdc4', lw=1.5, label='vy')
+line_ac_z, = ax_arm_ctrl.plot([], [], '#45b7d1', lw=1.5, label='vz')
+ax_arm_ctrl.legend(loc='upper left', fontsize=7, labelcolor='white', framealpha=0.3)
 
 plt.tight_layout()
 plt.ion()
@@ -192,23 +375,43 @@ grip_idx = 0
 # Open MuJoCo viewer (only in live mode)
 if not RENDER_GIF:
     viewer = mujoco.viewer.launch_passive(sim.engine.model, sim.engine.data)
-    viewer.cam.distance = 1.8
+    viewer.cam.distance = 2.5
     viewer.cam.azimuth = 135
-    viewer.cam.elevation = -20
-    viewer.cam.lookat[:] = [0.0, 0.0, 0.1]
+    viewer.cam.elevation = -30
+    viewer.cam.lookat[:] = [0.6, 0.0, 0.1]
 else:
     viewer = None
+
+# Initialize observer state from true state
+estimated_base = sim.base.get_state().copy()
+base_vel = np.zeros(3)  # initial control input for observer
 
 for step in range(total_steps):
     t = step * 0.02
 
-    # ── Arm: P-controller → fallback FK/IK ──
+    # ── Get true states ──
+    true_base = sim.base.get_state()
+    true_ee = arm_fallback.get_state()[:3]
+
+    # ── Add sensor noise ──
+    noisy_base = true_base + np.random.normal(
+        [0, 0, 0], [NOISE_BASE_POS, NOISE_BASE_POS, NOISE_BASE_THETA]
+    )
+    noisy_ee = true_ee + np.random.normal(
+        [0, 0, 0], [NOISE_ARM_POS, NOISE_ARM_POS, NOISE_ARM_POS]
+    )
+
+    # ── Base: Luenberger observer (uses previous control input) ──
+    estimated_base = base_observer.update(base_vel, noisy_base)
+
+    # ── Arm: EMA estimator ──
+    arm_estimated_ee[0] = ALPHA_ARM * noisy_ee + (1 - ALPHA_ARM) * arm_estimated_ee[0]
+
+    # ── Arm: P-controller using ESTIMATED state ──
     target_ee = ee_schedule[step]
-    current_ee = arm_fallback.get_state()
-    vel = 2.0 * (target_ee - current_ee)
-    vel = np.clip(vel, [-0.3, -0.3, -0.3, -1.0, -1.0, -1.0],
-                        [0.3,  0.3,  0.3,  1.0,  1.0,  1.0])
-    joints = arm_fallback.step(vel)
+    vel = 2.0 * (target_ee[:3] - arm_estimated_ee[0])
+    vel = np.clip(vel, [-0.3, -0.3, -0.3], [0.3, 0.3, 0.3])
+    joints = arm_fallback.step(np.concatenate([vel, [0, 0, 0]]))
 
     # Mirror to MuJoCo
     sim.engine.set_arm_ctrl(joints)
@@ -219,52 +422,123 @@ for step in range(total_steps):
         sim.engine.set_full_ctrl(ctrl)
         grip_idx += 1
 
-    # ── Base: LQR ──
+    # ── Base: LQR using ESTIMATED state ──
     target_pose = base_schedule[step]
-    current_pose = sim.base.get_state()
-    base_vel = base_ctrl.compute(current_pose, target_pose)
+    base_vel = base_ctrl.compute(estimated_base, target_pose)
     base_vel = np.clip(base_vel, [-0.5, -0.5, -1.0], [0.5, 0.5, 1.0])
     sim.base.step(base_vel)
 
     # ── Step physics ──
     sim.step()
 
-    # ── Update viewer camera ──
-    if viewer is not None:
-        base_pose = sim.base.state
-        viewer.cam.lookat[:] = [base_pose[0], base_pose[1], 0.1]
-
     # ── Log data ──
     log_time.append(t)
-    base_err = target_pose - current_pose
-    log_base_error.append(base_err.copy())
-    log_base_control.append(base_vel.copy())
-    log_ee_pos.append(arm_fallback.get_state()[:3].copy())
+    log_base_ref.append(target_pose.copy())
+    log_base_actual.append(true_base.copy())
+    log_base_noisy.append(noisy_base.copy())
+    log_base_estimated.append(estimated_base.copy())
+    log_base_error.append((target_pose - true_base).copy())
+    log_base_effort.append(base_vel.copy())
+    log_arm_ref.append(target_ee[:3].copy())
+    log_arm_actual.append(true_ee.copy())
+    log_arm_noisy.append(noisy_ee.copy())
+    log_arm_estimated.append(arm_estimated_ee[0].copy())
+    log_arm_error.append((target_ee[:3] - true_ee).copy())
+    log_arm_effort.append(vel[:3].copy())
 
     # ── Update plot every 5 steps ──
     if step % 5 == 0 and step > 0:
         time_arr = np.array(log_time)
-        err_arr = np.array(log_base_error)
-        ctrl_arr = np.array(log_base_control)
-        ee_arr = np.array(log_ee_pos)
+        br_arr = np.array(log_base_ref)
+        ba_arr = np.array(log_base_actual)
+        bn_arr = np.array(log_base_noisy)
+        be_arr = np.array(log_base_estimated)
+        bo_arr = be_arr - ba_arr  # innovation = estimated - true (observer drives to zero)
+        bc_arr = np.array(log_base_effort)
+        ar_arr = np.array(log_arm_ref)
+        aa_arr = np.array(log_arm_actual)
+        an_arr = np.array(log_arm_noisy)
+        ae_arr = np.array(log_arm_estimated)
+        ao_arr = ae_arr - aa_arr  # innovation = estimated - true
+        ac_arr = np.array(log_arm_effort)
 
-        line_err_x.set_data(time_arr, err_arr[:, 0])
-        line_err_y.set_data(time_arr, err_arr[:, 1])
-        line_err_t.set_data(time_arr, err_arr[:, 2])
-        ax_err.relim()
-        ax_err.autoscale_view(scalex=False)
+        # Base tracking: ref, noisy, estimated, true
+        line_br_x.set_data(time_arr, br_arr[:, 0])
+        line_br_y.set_data(time_arr, br_arr[:, 1])
+        line_br_t.set_data(time_arr, br_arr[:, 2])
+        ax_base_track.relim()
+        ax_base_track.autoscale_view()
 
-        line_ctrl_x.set_data(time_arr, ctrl_arr[:, 0])
-        line_ctrl_y.set_data(time_arr, ctrl_arr[:, 1])
-        line_ctrl_t.set_data(time_arr, ctrl_arr[:, 2])
-        ax_ctrl.relim()
-        ax_ctrl.autoscale_view(scalex=False)
+        line_bn_x.set_data(time_arr, bn_arr[:, 0])
+        line_bn_y.set_data(time_arr, bn_arr[:, 1])
+        line_bn_t.set_data(time_arr, bn_arr[:, 2])
+        ax_base_track.relim()
+        ax_base_track.autoscale_view()
 
-        line_ee_x.set_data(time_arr, ee_arr[:, 0])
-        line_ee_y.set_data(time_arr, ee_arr[:, 1])
-        line_ee_z.set_data(time_arr, ee_arr[:, 2])
-        ax_ee.relim()
-        ax_ee.autoscale_view(scalex=False)
+        line_be_x.set_data(time_arr, be_arr[:, 0])
+        line_be_y.set_data(time_arr, be_arr[:, 1])
+        line_be_t.set_data(time_arr, be_arr[:, 2])
+        ax_base_track.relim()
+        ax_base_track.autoscale_view()
+
+        line_ba_x.set_data(time_arr, ba_arr[:, 0])
+        line_ba_y.set_data(time_arr, ba_arr[:, 1])
+        line_ba_t.set_data(time_arr, ba_arr[:, 2])
+        ax_base_track.relim()
+        ax_base_track.autoscale_view()
+
+        # Base observer innovation
+        line_bo_x.set_data(time_arr, bo_arr[:, 0])
+        line_bo_y.set_data(time_arr, bo_arr[:, 1])
+        line_bo_t.set_data(time_arr, bo_arr[:, 2])
+        ax_base_obs.relim()
+        ax_base_obs.autoscale_view()
+
+        # Arm tracking: ref, noisy, estimated, true
+        line_ar_x.set_data(time_arr, ar_arr[:, 0])
+        line_ar_y.set_data(time_arr, ar_arr[:, 1])
+        line_ar_z.set_data(time_arr, ar_arr[:, 2])
+        ax_arm_track.relim()
+        ax_arm_track.autoscale_view()
+
+        line_an_x.set_data(time_arr, an_arr[:, 0])
+        line_an_y.set_data(time_arr, an_arr[:, 1])
+        line_an_z.set_data(time_arr, an_arr[:, 2])
+        ax_arm_track.relim()
+        ax_arm_track.autoscale_view()
+
+        line_ae_x.set_data(time_arr, ae_arr[:, 0])
+        line_ae_y.set_data(time_arr, ae_arr[:, 1])
+        line_ae_z.set_data(time_arr, ae_arr[:, 2])
+        ax_arm_track.relim()
+        ax_arm_track.autoscale_view()
+
+        line_aa_x.set_data(time_arr, aa_arr[:, 0])
+        line_aa_y.set_data(time_arr, aa_arr[:, 1])
+        line_aa_z.set_data(time_arr, aa_arr[:, 2])
+        ax_arm_track.relim()
+        ax_arm_track.autoscale_view()
+
+        # Arm estimator innovation
+        line_ao_x.set_data(time_arr, ao_arr[:, 0])
+        line_ao_y.set_data(time_arr, ao_arr[:, 1])
+        line_ao_z.set_data(time_arr, ao_arr[:, 2])
+        ax_arm_obs.relim()
+        ax_arm_obs.autoscale_view()
+
+        # Base control effort
+        line_bc_x.set_data(time_arr, bc_arr[:, 0])
+        line_bc_y.set_data(time_arr, bc_arr[:, 1])
+        line_bc_t.set_data(time_arr, bc_arr[:, 2])
+        ax_base_ctrl.relim()
+        ax_base_ctrl.autoscale_view()
+
+        # Arm control effort
+        line_ac_x.set_data(time_arr, ac_arr[:, 0])
+        line_ac_y.set_data(time_arr, ac_arr[:, 1])
+        line_ac_z.set_data(time_arr, ac_arr[:, 2])
+        ax_arm_ctrl.relim()
+        ax_arm_ctrl.autoscale_view()
 
         fig.canvas.draw()
         if not RENDER_GIF:
