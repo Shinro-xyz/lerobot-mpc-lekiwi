@@ -239,8 +239,11 @@ log_base_error = []     # tracking error = ref - true
 log_base_effort = []    # LQR output [vx, vy, ω]
 
 # ── Plot setup ─────────────────────────────────────────────────────────────
+GIF_WIDTH = 640
+GIF_HEIGHT = 400
+
 if RENDER_GIF:
-    renderer = mujoco.Renderer(sim.engine.model, width=400, height=300)
+    renderer = mujoco.Renderer(sim.engine.model, width=GIF_WIDTH, height=GIF_HEIGHT)
     camera = mujoco.MjvCamera()
     camera.distance = 1.8
     camera.azimuth = 135
@@ -417,8 +420,29 @@ for step in range(total_steps):
 
     # ── Capture frame for GIF ──
     if RENDER_GIF and step % capture_every == 0:
+        # Render MuJoCo scene
         renderer.update_scene(sim.engine.data, camera)
-        frames.append(renderer.render())
+        mujoco_frame = renderer.render()
+
+        # Render matplotlib plot to array
+        from io import BytesIO
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=100, facecolor=fig.get_facecolor(), edgecolor='none')
+        buf.seek(0)
+        from PIL import Image
+        plot_pil = Image.open(buf)
+        plot_frame = np.array(plot_pil.convert('RGB'))
+
+        # Composite: MuJoCo on left, plot on right (both same height)
+        mj_h, mj_w = mujoco_frame.shape[:2]
+        plot_h, plot_w = plot_frame.shape[:2]
+        # Resize plot to match MuJoCo height
+        plot_pil = Image.fromarray(plot_frame)
+        plot_pil = plot_pil.resize((int(plot_pil.width * mj_h / plot_h), mj_h), Image.Resampling.LANCZOS)
+        plot_resized = np.array(plot_pil)
+        # Stack horizontally
+        composite = np.hstack([mujoco_frame, plot_resized])
+        frames.append(composite)
 
     # ── Sync viewer ──
     if viewer is not None:

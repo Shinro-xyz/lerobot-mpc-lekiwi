@@ -76,7 +76,7 @@
                 </default>
             </default>
             <default class="collision">
-                <geom group="3" type="mesh"/>
+                <geom group="3" type="mesh" contype="1" conaffinity="1"/>
                 <default class="finger_collision">
                     <geom type="box" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001"/>
                 </default>

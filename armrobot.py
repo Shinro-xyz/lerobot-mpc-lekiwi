@@ -234,26 +234,89 @@ class ArmRobot(Plant):
             pos_err=target_pose[:3,3]-T_cur[:3,3]
             R_err=target_pose[:3,:3]@T_cur[:3,:3].T
             angle=np.arccos(np.clip((np.trace(R_err)-1)/2,-1,1))
- 
+
             if angle<tol and np.linalg.norm(pos_err)<tol:
                 break
- 
+
             axis = np.array([R_err[2,1]-R_err[1,2],
                                  R_err[0,2]-R_err[2,0],
                                  R_err[1,0]-R_err[0,1]])
- 
+
             if np.linalg.norm(axis) > 1e-6:
                 ori_err = (axis / np.linalg.norm(axis)) * angle
             else:
                 ori_err = np.zeros(3)
-            
+
             v = np.concatenate([pos_err, ori_err])  # 6D twist
-          
+
             J=self._jacobian(q)
             # 4. Step toward target
             dq = np.linalg.pinv(J)@v
             dq = np.clip(dq,-max_step,max_step)
             q = q + dq
             q = np.clip(q, self.joint_limits[:, 0], self.joint_limits[:, 1])
-        
+
         return q
+
+    def mujoco_ik(self, target_ee: np.ndarray, max_iters: int = 20, lam: float = 0.01, max_dq: float = 0.5):
+        """
+        Iterative damped least-squares IK using MuJoCo's exact Jacobian.
+
+        Uses the real mesh Jacobian (mj_jac) rather than the simplified FK model.
+        Sets qpos to the computed joints so position servos start close to target.
+
+        Args:
+            target_ee: Target end-effector position [x, y, z].
+            max_iters: Maximum IK iterations.
+            lam: Damping factor for pseudoinverse regularization.
+            max_dq: Maximum joint change per iteration (rad).
+
+        Returns:
+            Joint targets (6-dim) clipped to limits.
+        """
+        if self._engine is None:
+            raise RuntimeError("mujoco_ik requires a MuJoCo engine (call physics_engine first)")
+
+        engine = self._engine
+        ee_body_id = self._ee_body_id
+        arm_qpos_slice = engine.arm_qpos_slice
+        arm_limits = self.joint_limits
+        arm_jac_start = 9 if engine.has_free_joint else 3
+
+        current_ee = engine.data.xpos[ee_body_id].copy()
+        error = target_ee - current_ee
+
+        if np.linalg.norm(error) < 0.001:
+            return engine.get_arm_qpos()
+
+        current_joints = engine.get_arm_qpos().copy()
+
+        for _ in range(max_iters):
+            jacp = np.zeros((3, engine.model.nv))
+            jacr = np.zeros((3, engine.model.nv))
+            mujoco.mj_jac(engine.model, engine.data, jacp, jacr,
+                          engine.data.xpos[ee_body_id], ee_body_id)
+            J = jacp[:, arm_jac_start:arm_jac_start + 6]
+
+            # Damped least-squares: dq = J^T (J J^T + λ²I)⁻¹ e
+            JJT = J @ J.T
+            dq = J.T @ np.linalg.solve(JJT + lam**2 * np.eye(3), error)
+            dq = np.clip(dq, -max_dq, max_dq)
+            current_joints = current_joints + dq
+            current_joints = np.clip(current_joints, arm_limits[:, 0], arm_limits[:, 1])
+
+            # Forward kinematics to update Jacobian for next iteration
+            engine.data.qpos[arm_qpos_slice] = current_joints
+            mujoco.mj_forward(engine.model, engine.data)
+
+            # Recompute error
+            current_ee = engine.data.xpos[ee_body_id].copy()
+            error = target_ee - current_ee
+            if np.linalg.norm(error) < 0.001:
+                break
+
+        # Set qpos to the IK-computed joints so servos don't have to move far
+        engine.data.qpos[arm_qpos_slice] = current_joints
+        mujoco.mj_forward(engine.model, engine.data)
+
+        return current_joints

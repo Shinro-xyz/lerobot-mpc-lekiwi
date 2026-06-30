@@ -1,11 +1,11 @@
 # FILE: capture_gif.py
 """
-LeKiwi arm extension demo — EE-space P-controller + smooth trajectory.
+LeKiwi arm extension demo — smooth trajectory + MuJoCo Jacobian IK via ArmRobot.
 
 Architecture:
   Base:  Fixed at origin (no control, no free joint)
-  Arm:   P-controller in EE space → Jacobian → joint velocity → position servos
-         Reference is a smooth cubic trajectory between waypoints
+  Arm:   ArmRobot with MuJoCo backend
+         Smooth cubic trajectory → target EE → MuJoCo Jacobian IK → joint targets → servos
 
 Usage:
   python capture_gif.py                          # live viewer + plot
@@ -39,51 +39,38 @@ HERE = Path(__file__).parent
 OUTPUT_PATH = str(HERE / "lekiwi_arm_demo.gif")
 
 from lekiwi_sim import MJCF_PATH, HERE as LEKIWI_HOME, MuJoCoEngine
-from pid import PIDController
+from armrobot import ArmRobot
 
 
 # ── Smooth trajectory (cubic interpolation between waypoints) ──────────────
 # Waypoints as OFFSETS from home (dx, dy, dz)
 WAYPOINT_OFFSETS = [
-    (1.0,   np.array([0.0,   0.0,   0.0])),    # home — 1s
-    (1.0,   np.array([0.0,   0.08,  0.0])),    # extend in y — 1s
-    (1.0,   np.array([0.0,   0.16,  0.0])),    # extend further — 1s
-    (1.0,   np.array([0.0,   0.24,  0.0])),    # max extension — 1s
-    (1.0,   np.array([0.0,   0.16,  0.0])),    # retract — 1s
-    (1.0,   np.array([0.0,   0.08,  0.0])),    # retract — 1s
-    (1.0,   np.array([0.0,   0.0,   0.0])),    # back to home — 1s
+    (1.0,   np.array([0.0,   0.0,   0.0])),     # home — 1s
+    (1.0,   np.array([0.0,   0.08,  0.05])),    # extend up and out — 1s
+    (1.0,   np.array([0.0,   0.16,  0.10])),    # extend further — 1s
+    (1.0,   np.array([0.0,   0.24,  0.15])),    # max extension — 1s
+    (1.0,   np.array([0.0,   0.16,  0.10])),    # retract — 1s
+    (1.0,   np.array([0.0,   0.08,  0.05])),    # retract — 1s
+    (1.0,   np.array([0.0,   0.0,   0.0])),     # back to home — 1s
 ]
 
-# Build cubic trajectory
 def build_cubic_trajectory(waypoints, dt=0.02):
-    """
-    Generate smooth position + velocity profile via cubic interpolation.
-
-    Each segment between p_i and p_{i+1} over duration T:
-        p(t) = a0 + a2*t^2 + a3*t^3   (zero velocity at both ends)
-    """
+    """Generate smooth position profile via cubic interpolation."""
     schedule_pos = []
-    schedule_vel = []
-
     for i in range(len(waypoints) - 1):
         duration, p_start = waypoints[i]
         _, p_end = waypoints[i + 1]
         T = duration
         n_steps = int(np.round(T / dt))
-
         delta = p_end - p_start
         a0 = p_start
         a2 = 3.0 * delta / (T * T)
         a3 = -2.0 * delta / (T * T * T)
-
         for k in range(n_steps):
             t_local = k * dt
             pos = a0 + a2 * t_local**2 + a3 * t_local**3
-            vel = 2.0 * a2 * t_local + 3.0 * a3 * t_local**2
             schedule_pos.append(pos.copy())
-            schedule_vel.append(vel.copy())
-
-    return np.array(schedule_pos), np.array(schedule_vel)
+    return np.array(schedule_pos)
 
 
 # ── Create sim ──────────────────────────────────────────────────────────────
@@ -110,32 +97,33 @@ print(f"EE home position (from MuJoCo): x={ee_home[0]:.3f}, y={ee_home[1]:.3f}, 
 waypoints_abs = [(d, ee_home + offset) for d, offset in WAYPOINT_OFFSETS]
 
 # Build smooth trajectory
-ee_ref_pos, ee_ref_vel = build_cubic_trajectory(waypoints_abs)
+ee_ref_pos = build_cubic_trajectory(waypoints_abs)
 total_steps = len(ee_ref_pos)
 print(f"Trajectory: {total_steps} steps ({total_steps * 0.02:.1f}s)")
 
-# Create engine directly
+# Create engine
 engine = MuJoCoEngine(dt=0.02, xml_string=base_xml, assets=assets)
 engine.reset()
 
-# Cache arm indices
-arm_qpos_slice = engine.arm_qpos_slice
-arm_limits = engine.arm_limits
-ee_body_id = mujoco.mj_name2id(engine.model, mujoco.mjtObj.mjOBJ_BODY, "Moving_Jaw_08d-v1")
-if ee_body_id == -1:
-    ee_body_id = engine.model.nbody - 1
-arm_jac_start = 9 if engine.has_free_joint else 3
+# Create ArmRobot (for structure, but we use MuJoCo IK directly)
+rot_axes = ["y", "z", "z", "x", "z", "z"]
+link_offsets = np.array([
+    [0.018300,  0.030600,  0.052200],
+    [-0.001500, -0.114582,  0.018082],
+    [-0.001500,  0.132932,  0.028720],
+    [-0.020100,  0.025822, -0.055375],
+    [0.019800,  0.026631, -0.013098],
+    [0.0,        0.0,       0.0],
+])
 
-# ── PID controller for EE space ────────────────────────────────────────────
-KP_EE = np.array([5.0, 5.0, 5.0])   # proportional gain
-KI_EE = np.array([0.5, 0.5, 0.5])   # integral gain (eliminates steady-state error)
-KD_EE = np.array([0.1, 0.1, 0.1])   # derivative gain (dampens overshoot)
-ee_ctrl = PIDController(
-    kp=KP_EE, ki=KI_EE, kd=KD_EE, dt=0.02,
-    output_limits=(np.array([-1.0, -1.0, -1.0]), np.array([1.0, 1.0, 1.0])),
+arm = ArmRobot(
+    num_dof=6,
+    dt=0.02,
+    joint_limits=engine.arm_limits,
+    joint_offsets=link_offsets,
+    rot_axes=rot_axes,
 )
-LAM_IK = 0.1   # Damping for Jacobian pseudoinverse
-MAX_DQ = 0.5   # Max joint velocity per step (rad/step)
+arm.physics_engine(engine)
 
 
 # ── Data logging ───────────────────────────────────────────────────────────
@@ -143,13 +131,16 @@ log_time = []
 log_ee_ref = []       # reference EE [x, y, z]
 log_ee_actual = []    # true EE [x, y, z]
 log_ee_error = []     # tracking error = ref - true
-log_ee_ctrl = []      # controller output (EE velocity command)
 log_joints = []       # joint positions [q1..q6]
 
 
 # ── Plot setup ─────────────────────────────────────────────────────────────
+GIF_WIDTH = 640
+GIF_HEIGHT = 400
+PLOT_HEIGHT = 300
+
 if RENDER_GIF:
-    renderer = mujoco.Renderer(engine.model, width=400, height=300)
+    renderer = mujoco.Renderer(engine.model, width=GIF_WIDTH, height=GIF_HEIGHT)
     camera = mujoco.MjvCamera()
     camera.distance = 1.5
     camera.azimuth = 135
@@ -173,7 +164,7 @@ for ax in axes:
 
 # ── Top: EE tracking ──
 ax_ee_track = axes[0]
-ax_ee_track.set_title('Arm EE — Ref / True (P-controller: u = Kp · e)', color='white', fontsize=9, fontweight='bold')
+ax_ee_track.set_title('Arm EE — Ref / True (MuJoCo IK → position servos)', color='white', fontsize=9, fontweight='bold')
 ax_ee_track.set_ylabel('Position (m)', color='white', fontsize=8)
 ax_ee_track.set_ylim(-0.1, 0.4)
 line_er_x, = ax_ee_track.plot([], [], '#ff6b6b', lw=1.5, ls='--', label='x ref')
@@ -184,7 +175,7 @@ line_ea_y, = ax_ee_track.plot([], [], '#4ecdc4', lw=1.0, alpha=0.6, label='y tru
 line_ea_z, = ax_ee_track.plot([], [], '#45b7d1', lw=1.0, alpha=0.6, label='z true')
 ax_ee_track.legend(loc='upper left', fontsize=6, labelcolor='white', framealpha=0.3, ncol=2)
 
-# ── Middle: Tracking error + control effort ──
+# ── Middle: Tracking error ──
 ax_error = axes[1]
 ax_error.set_title('Arm EE — Tracking Error (ref − true)', color='white', fontsize=9, fontweight='bold')
 ax_error.set_ylabel('Error (m)', color='white', fontsize=8)
@@ -227,40 +218,18 @@ if not RENDER_GIF:
 else:
     viewer = None
 
-# Initialize joint state
-current_joints = engine.get_arm_qpos().copy()
-
 for step in range(total_steps):
     t = step * 0.02
 
-    # ── Get true EE position ──
-    true_ee = engine.data.xpos[ee_body_id].copy()
+    # ── Get true EE position from ArmRobot ──
+    true_ee = arm.get_state()[:3]
 
     # ── Reference from smooth trajectory ──
     target_ee = ee_ref_pos[step]
 
-    # ── PID controller in EE space ──
-    ee_error = target_ee - true_ee
-    ee_vel_cmd = ee_ctrl.compute(true_ee, target_ee)  # PID output (m/s)
-
-    # ── Map EE velocity to joint velocity via Jacobian ──
-    jacp = np.zeros((3, engine.model.nv))
-    jacr = np.zeros((3, engine.model.nv))
-    mujoco.mj_jac(engine.model, engine.data, jacp, jacr,
-                  engine.data.xpos[ee_body_id], ee_body_id)
-    J = jacp[:, arm_jac_start:arm_jac_start + 6]
-
-    # Damped least-squares: dq = J^T (J J^T + λ²I)⁻¹ ee_vel
-    JJT = J @ J.T
-    dq = J.T @ np.linalg.solve(JJT + LAM_IK**2 * np.eye(3), ee_vel_cmd)
-    dq = np.clip(dq, -MAX_DQ, MAX_DQ)
-
-    # Integrate to joint targets
-    current_joints = current_joints + dq
-    current_joints = np.clip(current_joints, arm_limits[:, 0], arm_limits[:, 1])
-
-    # Send to MuJoCo position servos
-    engine.set_arm_ctrl(current_joints)
+    # ── MuJoCo Jacobian IK via ArmRobot → joint targets → position servos ──
+    joint_targets = arm.mujoco_ik(target_ee)
+    engine.set_arm_ctrl(joint_targets)
 
     # ── Step physics ──
     engine.step()
@@ -269,8 +238,7 @@ for step in range(total_steps):
     log_time.append(t)
     log_ee_ref.append(target_ee.copy())
     log_ee_actual.append(true_ee.copy())
-    log_ee_error.append(ee_error.copy())
-    log_ee_ctrl.append(ee_vel_cmd.copy())
+    log_ee_error.append((target_ee - true_ee).copy())
     log_joints.append(engine.get_arm_qpos().copy())
 
     # ── Update plot every 5 steps ──
@@ -309,8 +277,29 @@ for step in range(total_steps):
 
     # ── Capture frame for GIF ──
     if RENDER_GIF and step % capture_every == 0:
+        # Render MuJoCo scene
         renderer.update_scene(engine.data, camera)
-        frames.append(renderer.render())
+        mujoco_frame = renderer.render()
+
+        # Render matplotlib plot to array
+        from io import BytesIO
+        buf = BytesIO()
+        fig.savefig(buf, format='png', dpi=100, facecolor=fig.get_facecolor(), edgecolor='none')
+        buf.seek(0)
+        from PIL import Image
+        plot_pil = Image.open(buf)
+        plot_frame = np.array(plot_pil.convert('RGB'))
+
+        # Composite: MuJoCo on left, plot on right (both same height)
+        mj_h, mj_w = mujoco_frame.shape[:2]
+        plot_h, plot_w = plot_frame.shape[:2]
+        # Resize plot to match MuJoCo height
+        plot_pil = Image.fromarray(plot_frame)
+        plot_pil = plot_pil.resize((int(plot_pil.width * mj_h / plot_h), mj_h), Image.Resampling.LANCZOS)
+        plot_resized = np.array(plot_pil)
+        # Stack horizontally
+        composite = np.hstack([mujoco_frame, plot_resized])
+        frames.append(composite)
 
     # ── Sync viewer ──
     if viewer is not None:
