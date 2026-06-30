@@ -15,4 +15,7 @@ class CubicPolynomial(TrajectoryGenerator):
         self.duration=duration
 
     def position_at(self, t: float):
-        
+        t=np.clip(t,0,self.duration)
+        return self.a0+self.a1*t+self.a2*t**2+self.a3*t**3
+
+    
