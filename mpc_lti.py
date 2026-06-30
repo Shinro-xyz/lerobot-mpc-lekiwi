@@ -119,3 +119,82 @@ class MPC_LTI(Controller):
 
         return ctrl
 
+
+class MPC_LTI_DeltaU(MPC_LTI):
+    """
+    MPC with Δu (control rate) regularization via state augmentation.
+
+    Augments the state to [x; u_prev] so the control variable becomes
+    Δu = u_k - u_{k-1}. The cost penalizes Δu^T S Δu, smoothing chatter.
+
+    Usage:
+        mpc = MPC_LTI_DeltaU(
+            horizon=15,
+            control_cost_matrix=R,      # penalizes u_prev in augmented state
+            state_cost_matrix=Q,        # penalizes x
+            A_dynamics=A,
+            B_dynamics=B,
+            terminal_cost=P,
+            delta_u_penalty=S,          # penalizes Δu (the actual control variable)
+        )
+        mpc.constraints(...)
+        u = mpc.compute(x0, u_prev=last_u)
+    """
+    def __init__(self, delta_u_penalty: np.ndarray, **kwargs):
+        self.S_delta = delta_u_penalty
+        super().__init__(**kwargs)
+
+    def _augment_dynamics(self):
+        """Augment state to [x; u_prev], control becomes Δu."""
+        n, m = self.n, self.m
+        R_orig = self.R.copy()
+
+        # Augmented dynamics: z_{k+1} = [A B; 0 I] z_k + [B; I] Δu_k
+        self.A = np.block([
+            [self.A, self.B],
+            [np.zeros((m, n)), np.eye(m)]
+        ])
+        self.B = np.vstack([self.B, np.eye(m)])
+
+        # Augmented state cost: penalize x with Q, u_prev with R
+        Q_aug = np.zeros((n + m, n + m))
+        Q_aug[:n, :n] = self.Q
+        Q_aug[n:, n:] = R_orig
+        self.Q = Q_aug
+
+        # Control cost is now S (Δu penalty)
+        self.R = self.S_delta
+
+        # Terminal cost: penalize x with P, u with R
+        P_aug = np.zeros((n + m, n + m))
+        P_aug[:n, :n] = self.P
+        P_aug[n:, n:] = R_orig
+        self.P = P_aug
+
+        self.n = n + m  # augmented state dim
+
+    def _mpc_dynamics_matrices(self):
+        """Override: augment dynamics before computing T_bar, S_bar."""
+        self.n = self.A.shape[0]
+        self.m = self.B.shape[1]
+        self._augment_dynamics()
+        # Now call the parent's matrix computation with augmented dims
+        super()._mpc_dynamics_matrices()
+
+    def compute(self, x0, u_prev=None):
+        """
+        Solve MPC with Δu regularization.
+
+        Args:
+            x0: Original (non-augmented) state vector.
+            u_prev: Previous control input. Required.
+
+        Returns:
+            The optimal control action for the current step.
+        """
+        if u_prev is None:
+            u_prev = np.zeros(self.m)
+        # Augment state: [x; u_prev]
+        x0_aug = np.concatenate([x0, u_prev])
+        return super().compute(x0_aug)
+
