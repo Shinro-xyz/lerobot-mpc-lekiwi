@@ -150,7 +150,7 @@ class TrajectoryGenerator(ABC):
         generator.reset()
     """
     @abstractmethod
-    def generate(self, start_position: Any, end_position: Any, duration: Any) -> Any:
+    def generate(self, start_position: Any, end_position: Any, duration: Any, *args: Any, **kwargs: Any) -> Any:
         """
         Generate a trajectory from start to end position over a given duration.
 
@@ -171,4 +171,8 @@ class TrajectoryGenerator(ABC):
 
         Clears any cached or ongoing trajectory data.
         """
+        pass
+        
+    @abstractmethod
+    def position_at(self,t:float, *args:Any, **kwargs: Any)->Any:
         pass
