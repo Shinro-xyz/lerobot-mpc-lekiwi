@@ -121,6 +121,10 @@ lerobot-mpc-lekiwi/
 ├── capture_gif.py             # Arm extension demo (cubic trajectory + IK)
 ├── capture_demo.py            # Pick-and-place GIF capture
 ├── test_pick_and_place.py     # Integration tests
+├── lab-notes/
+│   └── daily/                 # Experiment logs (auto-indexed on commit)
+├── AGENTS.md                  # LLM codebase index instructions
+├── .codebase/                 # SQLite codebase index (auto-generated)
 └── README.md
 ```
 
