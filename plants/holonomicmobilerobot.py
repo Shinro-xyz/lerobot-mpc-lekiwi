@@ -1,8 +1,10 @@
 import numpy as np
 from typing import Optional, Tuple, List
 from components import Plant
+from factories.registry import register_plant
 
 
+@register_plant("HolonomicMobileRobot")
 class HolonomicMobileRobot(Plant):
     """Holonomic mobile robot with Mecanum/omni-wheel kinematics.
 
@@ -141,3 +143,17 @@ class HolonomicMobileRobot(Plant):
         A = np.eye(3)
         B = self.dt * np.eye(3)
         return A, B
+
+    @classmethod
+    def from_config(cls, config):
+        plant = cls(
+            num_wheels=config["num_wheels"],
+            radius_robots=config["radius_robots"],
+            gamma=config["gamma"],
+            radius_wheels=config["radius_wheels"],
+            dt=config["dt"],
+        )
+        engine = config.get("engine")
+        if engine is not None:
+            plant.physics_engine(engine)
+        return plant

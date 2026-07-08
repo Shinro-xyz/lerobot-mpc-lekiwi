@@ -135,45 +135,16 @@ class RobotSim:
         # Build joint group name→name-list mapping
         joint_groups = self.config.get("joint_groups", {})
 
-        # Instantiate each plant from config
+        # Instantiate each plant from config via registry
         self._plants = {}
         for plant_cfg in self.config.get("plants", []):
             ptype = plant_cfg["type"]
             pname = plant_cfg["name"]
 
-            if ptype == "ArmRobot":
-                from plants.armrobot import ArmRobot
-                joint_group = plant_cfg.get("joint_group")
-                joint_names = joint_groups.get(joint_group, [])
-                num_dof = plant_cfg["num_dof"]
-                rot_axes = plant_cfg.get("rot_axes", ["z"] * num_dof)
-                offsets = np.array(plant_cfg.get("joint_offsets", [[0.0, 0.0, 0.0]] * num_dof))
-                limits = np.array([self.engine.get_joint_limits(n) for n in joint_names])
-
-                plant = ArmRobot(
-                    num_dof=num_dof,
-                    dt=dt,
-                    joint_limits=limits,
-                    joint_offsets=offsets,
-                    rot_axes=rot_axes,
-                    joint_names=joint_names,
-                    ee_body_name=plant_cfg.get("ee_body_name"),
-                )
-                plant.physics_engine(self.engine)
-
-            elif ptype == "HolonomicMobileRobot":
-                from plants.holonomicmobilerobot import HolonomicMobileRobot
-                plant = HolonomicMobileRobot(
-                    num_wheels=plant_cfg["num_wheels"],
-                    radius_robots=plant_cfg["radius_robots"],
-                    gamma=plant_cfg["gamma"],
-                    radius_wheels=plant_cfg["radius_wheels"],
-                    dt=dt,
-                )
-                plant.physics_engine(self.engine)
-
-            else:
-                raise ValueError(f"Unknown plant type: {ptype}")
+            from factories.registry import _PLANT_REGISTRY
+            cls = _PLANT_REGISTRY[ptype]
+            plant_config = {**plant_cfg, "joint_groups": joint_groups, "engine": self.engine, "dt": dt}
+            plant = cls.from_config(plant_config)
 
             self._plants[pname] = plant
             setattr(self, pname, plant)

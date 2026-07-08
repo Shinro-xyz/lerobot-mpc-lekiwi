@@ -1,8 +1,10 @@
 import numpy as np
 from typing import Optional, List
 from components import Plant, PhysicsEngine
+from factories.registry import register_plant
 
 
+@register_plant("ArmRobot")
 class ArmRobot(Plant):
     """6-DOF robotic arm plant with forward kinematics, Jacobian, and IK.
 
@@ -235,3 +237,21 @@ class ArmRobot(Plant):
         self._engine.forward()
 
         return current_joints
+
+    @classmethod
+    def from_config(cls, config):
+        joint_names = config["joint_groups"][config["joint_group"]]
+        engine = config["engine"]
+        limits = np.array([engine.get_joint_limits(n) for n in joint_names])
+        num_dof = config["num_dof"]
+        plant = cls(
+            num_dof=num_dof,
+            dt=config["dt"],
+            joint_limits=limits,
+            joint_offsets=np.array(config["joint_offsets"]),
+            rot_axes=config["rot_axes"],
+            joint_names=joint_names,
+            ee_body_name=config.get("ee_body_name"),
+        )
+        plant.physics_engine(engine)
+        return plant
