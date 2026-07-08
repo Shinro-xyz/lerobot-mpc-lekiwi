@@ -52,6 +52,12 @@ class PhysicsEngine(ABC):
         pass
 
     @abstractmethod
+    def compute_jacobian_for_joints(self, body_name: str, joint_names: list[str]) -> np.ndarray:
+        """Return the 6×k Jacobian (position + orientation) for a body, extracting only
+        the columns corresponding to the named joints. Returns shape (6, k)."""
+        pass
+
+    @abstractmethod
     def forward(self):
         """Run forward kinematics (mj_forward equivalent)."""
         pass
@@ -192,14 +198,12 @@ class Plant(ABC):
         pass
 
     @abstractmethod
-    def physics_engine(self, engine: Any, *args: Any, **kwargs: Any)-> Any:
+    def physics_engine(self, engine: Optional[PhysicsEngine], *args: Any, **kwargs: Any)-> Any:
         """
         Attach a physics engine to the plant.
 
-        Currently designed for MuJoCoEngine. The interface is engine-agnostic
-        but the implementation in ArmRobot uses mujoco.mj_jac and other
-        MuJoCo-specific APIs. If a different engine is needed later, the
-        implementation must be updated to match.
+        Args:
+            engine: A PhysicsEngine instance, or None to detach.
         """
         pass
 

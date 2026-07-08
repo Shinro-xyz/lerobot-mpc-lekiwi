@@ -8,7 +8,8 @@ No testing of MuJoCo internals, no "arm droops under gravity" nonsense.
 import numpy as np
 import sys
 
-from lekiwi_sim import LeKiwiSim, MuJoCoEngine
+from lekiwi_sim import LeKiwiSim
+from physics_engine.mujoco import MuJoCoEngine
 
 # ── Helpers ──
 PASS = 0
@@ -274,8 +275,8 @@ def test_reset():
     base_state = sim.base.get_state()
 
     check("Reset: arm joints back to zero",
-          almost_eq(state["arm_joints"], np.zeros(6), tol=1e-3),
-          f"got {state['arm_joints']}")
+          almost_eq(sim.arm.get_state()[:6], np.zeros(6), tol=1e-3),
+          f"got {sim.arm.get_state()[:6]}")
     check("Reset: base back to origin",
           almost_eq(base_state, np.zeros(3), tol=1e-3),
           f"got {base_state}")

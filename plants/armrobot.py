@@ -1,7 +1,6 @@
 import numpy as np
 from typing import Optional, List
-from components import Plant
-import mujoco
+from components import Plant, PhysicsEngine
 
 
 class ArmRobot(Plant):
@@ -10,7 +9,7 @@ class ArmRobot(Plant):
     Models a serial-link manipulator with configurable joint offsets and
     rotation axes. Supports two modes:
     1. **Standalone** — uses simplified FK/IK for quick testing
-    2. **MuJoCo** — attaches a physics engine for mesh-accurate Jacobian IK
+    2. **Physics engine** — attaches a PhysicsEngine for mesh-accurate Jacobian IK
 
     The arm operates in Cartesian space: step() takes a 6D velocity twist
     [dx, dy, dz, droll, dpitch, dyaw], integrates to a target pose, and
@@ -22,8 +21,10 @@ class ArmRobot(Plant):
             joint_limits=np.array([[-np.pi, np.pi]] * 6),
             joint_offsets=np.array([[...], [...], ...]),
             rot_axes=['y', 'z', 'z', 'x', 'z', 'z'],
+            joint_names=['Rotation', 'Pitch', ...],
+            ee_body_name='Moving_Jaw_08d-v1',
         )
-        arm.physics_engine(mujoco_engine)
+        arm.physics_engine(physics_engine)
         joints = arm.step(np.array([0.05, 0.0, 0.0, 0.0, 0.0, 0.0]))
     """
 
@@ -34,16 +35,9 @@ class ArmRobot(Plant):
         joint_limits: np.ndarray,
         joint_offsets: np.ndarray,
         rot_axes: List[str],
+        joint_names: Optional[List[str]] = None,
+        ee_body_name: Optional[str] = None,
     ):
-        """Initialize the ArmRobot.
-
-        Args:
-            num_dof: Number of degrees of freedom (joints).
-            dt: Time step for state integration (s).
-            joint_limits: Shape (num_dof, 2) array of [min, max] limits per joint.
-            joint_offsets: Shape (num_dof, 3) translation offsets for each joint.
-            rot_axes: List of rotation axes ('x', 'y', or 'z') for each joint.
-        """
         self.num_dof = num_dof
         self.dt = dt
         self.state = np.zeros(6)
@@ -52,114 +46,47 @@ class ArmRobot(Plant):
         self.axes = rot_axes
         self._last_joints = np.zeros(num_dof)
         self._engine = None
-        self._arm_jac_start = None
+        self._ee_body_name = ee_body_name
+        self._joint_names = joint_names if joint_names is not None else [f"joint_{i}" for i in range(num_dof)]
 
     def _get_ee_pos(self):
-        """Return [x, y, z] of end-effector from MuJoCo data."""
-        return self._engine.data.xpos[self._ee_body_id].copy()
-
-    def _compute_arm_jac_start(self):
-        """Return the column offset in the full Jacobian for arm joints."""
-        return 9 if self._engine.has_free_joint else 3
+        return self._engine.get_body_xpos(self._ee_body_name)
 
     def _get_ee_jacobian(self):
-        """Return the 6×6 full Jacobian (position + orientation) for the arm.
+        return self._engine.compute_jacobian_for_joints(self._ee_body_name, self._joint_names)
 
-        Uses MuJoCo's mj_jac to compute the exact mesh-based Jacobian at the
-        end-effector body. Only the arm joint columns are extracted.
-
-        Returns:
-            Jacobian matrix (6, 6) — position and orientation rows.
-        """
-        jacp = np.zeros((3, self._engine.model.nv))
-        jacr = np.zeros((3, self._engine.model.nv))
-        mujoco.mj_jac(self._engine.model, self._engine.data, jacp, jacr,
-                      self._engine.data.xpos[self._ee_body_id], self._ee_body_id)
-        cols = slice(self._arm_jac_start, self._arm_jac_start + 6)
-        return np.vstack([jacp[:, cols], jacr[:, cols]])
-
-    def physics_engine(self, engine):
-        """Attach a MuJoCo physics engine.
-
-        After attachment, step() and get_state() use MuJoCo's exact FK
-        and Jacobian for IK. The EE home position is initialized from the
-        MuJoCo model.
-
-        Args:
-            engine: MuJoCoEngine instance or None to detach.
-        """
+    def physics_engine(self, engine: Optional[PhysicsEngine]):
         self._engine = engine
         if engine is not None:
-            self._ee_body_id = self._find_ee_body_id(engine)
-            self._arm_jac_start = self._compute_arm_jac_start()
-            if self._ee_body_id >= 0:
-                mujoco.mj_forward(engine.model, engine.data)
-                ee = self._get_ee_pos()
-                self.state = np.array([ee[0], ee[1], ee[2], 0.0, 0.0, 0.0])
+            if self._ee_body_name is None:
+                self._ee_body_name = self._find_ee_body_name(engine)
+            self._engine.forward()
+            ee = self._get_ee_pos()
+            self.state = np.array([ee[0], ee[1], ee[2], 0.0, 0.0, 0.0])
         else:
-            self._ee_body_id = -1
-            self._arm_jac_start = None
             T_home, _, _ = self.forward_kinematics(np.zeros(self.num_dof))
             self.state = np.array([T_home[0, 3], T_home[1, 3], T_home[2, 3], 0.0, 0.0, 0.0])
 
-    def _find_ee_body_id(self, engine):
-        """Find the end-effector body ID in the MuJoCo model.
-
-        Searches by name first ("Moving_Jaw_08d-v1"), then falls back to
-        a substring search on all body names.
-
-        Args:
-            engine: MuJoCoEngine instance.
-
-        Returns:
-            Body ID of the end-effector, or last body if not found.
-        """
-        ee_body_id = mujoco.mj_name2id(engine.model, mujoco.mjtObj.mjOBJ_BODY, "Moving_Jaw_08d-v1")
-        if ee_body_id < 0:
-            for bid in range(engine.model.nbody):
-                if "Moving_Jaw" in engine.model.body(bid).name:
-                    ee_body_id = bid
-                    break
-        return ee_body_id
+    def _find_ee_body_name(self, engine: PhysicsEngine) -> str:
+        candidates = ["Moving_Jaw_08d-v1", "Moving_Jaw", "end_effector", "ee", "gripper"]
+        for name in candidates:
+            bid = engine.get_body_id(name)
+            if bid >= 0:
+                return name
+        return engine.body_names[-1]
 
     def get_state(self):
-        """Return the current 6D end-effector pose [x, y, z, 0, 0, 0].
-
-        When a physics engine is attached, reads the actual EE position
-        from MuJoCo's xpos (reflects the latest IK/physics step).
-
-        Returns:
-            Pose vector (6,) — [x, y, z, roll, pitch, yaw] (orientation
-            tracking is currently position-only, orientation set to 0).
-        """
         if self._engine is not None:
             ee = self._get_ee_pos()
             return np.array([ee[0], ee[1], ee[2], 0.0, 0.0, 0.0])
         return self.state.copy()
 
     def get_model(self):
-        """Get the discrete-time state-space model.
-
-        Returns a simple integrator model: A = I₆, B = dt * I₆.
-
-        Returns:
-            Tuple of (A, B) where A = I₆ and B = dt * I₆.
-        """
         A = np.eye(6)
         B = self.dt * np.eye(6)
         return A, B
 
     def _pose_to_transform(self, pose: np.ndarray):
-        """Convert a 6D pose to a 4×4 homogeneous transformation matrix.
-
-        Uses ZYX Euler angle convention: R = Rz @ Ry @ Rx.
-
-        Args:
-            pose: 6D pose [x, y, z, roll, pitch, yaw].
-
-        Returns:
-            4×4 transformation matrix.
-        """
         x, y, z, roll, pitch, yaw = pose
         Rx = np.array([[1, 0, 0], [0, np.cos(roll), -np.sin(roll)], [0, np.sin(roll), np.cos(roll)]])
         Ry = np.array([[np.cos(pitch), 0, np.sin(pitch)], [0, 1, 0], [-np.sin(pitch), 0, np.cos(pitch)]])
@@ -170,29 +97,13 @@ class ArmRobot(Plant):
         return T
 
     def step(self, u: np.ndarray):
-        """Update the system state based on control input.
-
-        When a MuJoCo engine is attached:
-        1. Integrates the velocity twist to a target EE position
-        2. Uses damped least-squares IK on MuJoCo's exact Jacobian
-        3. Sets joint positions in the physics engine
-
-        Without an engine:
-        1. Integrates state directly
-        2. Uses simplified FK-based IK
-
-        Args:
-            u: 6D control input [dx, dy, dz, droll, dpitch, dyaw].
-
-        Returns:
-            Joint angles (num_dof,) clipped to limits.
-        """
         if self._engine is not None:
             current_ee = self._get_ee_pos()
             target_ee = current_ee + u[:3] * self.dt
-            joint_targets = self.mujoco_ik(target_ee)
-            self._engine.set_arm_ctrl(joint_targets)
-            self._last_joints = self._engine.get_arm_qpos()
+            joint_targets = self.engine_ik(target_ee)
+            for name, val in zip(self._joint_names, joint_targets):
+                self._engine.set_joint_ctrl(name, val)
+            self._last_joints = np.array([self._engine.get_joint_qpos(n) for n in self._joint_names])
             ee = self._get_ee_pos()
             self.state = np.array([ee[0], ee[1], ee[2], 0.0, 0.0, 0.0])
             return self._last_joints
@@ -204,17 +115,6 @@ class ArmRobot(Plant):
         return self._last_joints
 
     def _homogenous_transform(self, joint_angles: np.ndarray):
-        """Compute individual joint transformation matrices.
-
-        Each joint's transform is a rotation about its axis followed by a
-        translation by its offset.
-
-        Args:
-            joint_angles: Current joint angles (num_dof,).
-
-        Returns:
-            Array of 4×4 transformation matrices, shape (num_dof, 4, 4).
-        """
         sines, cosines = np.sin(joint_angles), np.cos(joint_angles)
         T = np.zeros((self.num_dof, 4, 4))
         for i in range(self.num_dof):
@@ -235,19 +135,6 @@ class ArmRobot(Plant):
         return T
 
     def forward_kinematics(self, joint_angles: np.ndarray):
-        """Compute the end-effector pose and intermediate joint positions/axes.
-
-        Chains homogeneous transforms from base to end-effector.
-
-        Args:
-            joint_angles: Input joint angles (num_dof,).
-
-        Returns:
-            Tuple of:
-                T_cumulative: Final 4×4 end-effector transformation matrix.
-                positions: List of 3D positions for each joint.
-                axes: List of 3D rotation axes for each joint in world frame.
-        """
         T_joints = self._homogenous_transform(joint_angles)
         T_cumulative = np.eye(4)
         positions = []
@@ -262,17 +149,6 @@ class ArmRobot(Plant):
         return T_cumulative, positions, axes
 
     def _jacobian(self, joint_angles: np.ndarray):
-        """Compute the 6×N geometric Jacobian matrix.
-
-        Maps joint velocities to end-effector spatial velocity:
-            [v; ω] = J @ q̇
-
-        Args:
-            joint_angles: Current joint angles (num_dof,).
-
-        Returns:
-            Jacobian matrix (6, num_dof).
-        """
         T_endeffector, pos, axes = self.forward_kinematics(joint_angles)
         p_endeffector = pos[-1]
         J = np.zeros((6, self.num_dof))
@@ -289,22 +165,6 @@ class ArmRobot(Plant):
         tol: float = 1e-4,
         max_step: float = 0.2,
     ):
-        """Solve for joint angles using Jacobian pseudoinverse IK.
-
-        Iterative Newton-Raphson method with damped pseudoinverse:
-            q_{k+1} = q_k + J^† v
-        where v is the 6D twist (position + orientation error).
-
-        Args:
-            target_pose: 4×4 target transformation matrix.
-            max_iters: Maximum iterations for convergence.
-            q_init: Initial joint angle guess. Defaults to last joint state.
-            tol: Convergence tolerance for position and orientation error.
-            max_step: Maximum joint step per iteration (rad).
-
-        Returns:
-            Joint angles (num_dof,) clipped to joint limits.
-        """
         q = q_init if q_init is not None else self._last_joints.copy()
         for j in range(max_iters):
             T_cur, positions, axes = self.forward_kinematics(q)
@@ -334,48 +194,23 @@ class ArmRobot(Plant):
 
         return q
 
-    def mujoco_ik(
+    def engine_ik(
         self,
         target_ee: np.ndarray,
         max_iters: int = 20,
         lam: float = 0.01,
         max_dq: float = 0.5,
     ):
-        """Iterative damped least-squares IK using MuJoCo's exact Jacobian.
-
-        Uses the real mesh Jacobian (mj_jac) rather than the simplified FK
-        model. Sets qpos to the computed joints so position servos start
-        close to target.
-
-        The damped pseudoinverse is computed as:
-            dq = J^T (J J^T + λ²I)^{-1} e
-
-        Args:
-            target_ee: Target end-effector position [x, y, z].
-            max_iters: Maximum IK iterations.
-            lam: Damping factor for pseudoinverse regularization.
-            max_dq: Maximum joint change per iteration (rad).
-
-        Returns:
-            Joint targets (6-dim) clipped to limits.
-
-        Raises:
-            RuntimeError: If no MuJoCo engine is attached.
-        """
         if self._engine is None:
-            raise RuntimeError("mujoco_ik requires a MuJoCo engine (call physics_engine first)")
-
-        engine = self._engine
-        arm_qpos_slice = engine.arm_qpos_slice
-        arm_limits = self.joint_limits
+            raise RuntimeError("engine_ik requires a physics engine (call physics_engine first)")
 
         current_ee = self._get_ee_pos()
         error = target_ee - current_ee
 
         if np.linalg.norm(error) < 0.001:
-            return engine.get_arm_qpos()
+            return np.array([self._engine.get_joint_qpos(n) for n in self._joint_names])
 
-        current_joints = engine.get_arm_qpos().copy()
+        current_joints = np.array([self._engine.get_joint_qpos(n) for n in self._joint_names])
 
         for _ in range(max_iters):
             J = self._get_ee_jacobian()[:3, :]
@@ -384,17 +219,19 @@ class ArmRobot(Plant):
             dq = J.T @ np.linalg.solve(JJT + lam**2 * np.eye(3), error)
             dq = np.clip(dq, -max_dq, max_dq)
             current_joints = current_joints + dq
-            current_joints = np.clip(current_joints, arm_limits[:, 0], arm_limits[:, 1])
+            current_joints = np.clip(current_joints, self.joint_limits[:, 0], self.joint_limits[:, 1])
 
-            engine.data.qpos[arm_qpos_slice] = current_joints
-            mujoco.mj_forward(engine.model, engine.data)
+            for name, val in zip(self._joint_names, current_joints):
+                self._engine.set_joint_qpos(name, val)
+            self._engine.forward()
 
             current_ee = self._get_ee_pos()
             error = target_ee - current_ee
             if np.linalg.norm(error) < 0.001:
                 break
 
-        engine.data.qpos[arm_qpos_slice] = current_joints
-        mujoco.mj_forward(engine.model, engine.data)
+        for name, val in zip(self._joint_names, current_joints):
+            self._engine.set_joint_qpos(name, val)
+        self._engine.forward()
 
         return current_joints
