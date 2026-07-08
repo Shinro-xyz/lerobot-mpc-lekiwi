@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Generate a robot_config.yaml from a MuJoCo XML model file.
+Generate a robot_config.toml from a MuJoCo XML model file.
 
 Usage:
-    python scripts/generate_robot_config.py lekiwi-sim/mjcf_lcmm_robot.xml > robot_config.yaml
-    python scripts/generate_robot_config.py lekiwi-sim/so_arm100.xml > so_arm100_config.yaml
+    python scripts/generate_robot_config.py lekiwi-sim/mjcf_lcmm_robot.xml > robot_config.toml
+    python scripts/generate_robot_config.py lekiwi-sim/so_arm100.xml > so_arm100_config.toml
 
 The script:
   1. Parses the XML body tree and actuator definitions
@@ -12,18 +12,17 @@ The script:
   3. Computes link offsets from body positions along the arm chain
   4. Extracts rotation axes from joint/default class definitions
   5. Detects the end-effector body (last body in the arm chain)
-  6. Outputs a complete YAML config
+  6. Outputs a complete TOML config
 """
 
 import sys
 import xml.etree.ElementTree as ET
 import numpy as np
-import yaml
 from pathlib import Path
 
 
 class RobotConfigGenerator:
-    """Generates a robot_config.yaml from a MuJoCo XML model file."""
+    """Generates a robot_config.toml from a MuJoCo XML model file."""
 
     def __init__(self, xml_path: str):
         self.xml_path = Path(xml_path)
@@ -168,6 +167,64 @@ class RobotConfigGenerator:
 
         return config
 
+    def _format_toml_list(self, items: list, indent: int = 0) -> str:
+        pad = " " * indent
+        if len(items) == 0:
+            return "[]"
+        if isinstance(items[0], (int, float)):
+            inner = ", ".join(str(v) for v in items)
+            return f"[{inner}]"
+        if isinstance(items[0], list):
+            inner = ", ".join(self._format_toml_list(v) for v in items)
+            return f"[{inner}]"
+        return "[]"
+
+    def _format_toml_value(self, v) -> str:
+        if isinstance(v, str):
+            return f'"{v}"'
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, list):
+            return self._format_toml_list(v)
+        return str(v)
+
+    def _toml_string(self, config: dict) -> str:
+        lines = []
+        for key in ["model", "dt"]:
+            if key in config:
+                lines.append(f'{key} = {self._format_toml_value(config[key])}')
+        lines.append("")
+
+        jg = config.get("joint_groups", {})
+        if jg:
+            lines.append("[joint_groups]")
+            for name, joints in jg.items():
+                items = ", ".join(f'"{j}"' for j in joints)
+                lines.append(f'{name} = [{items}]')
+            lines.append("")
+
+        plants = config.get("plants", [])
+        for p in plants:
+            lines.append("[[plants]]")
+            for key in ["type", "name", "num_dof", "joint_group", "ee_body_name", "num_wheels",
+                        "radius_robots", "gamma", "radius_wheels"]:
+                if key in p:
+                    lines.append(f'{key} = {self._format_toml_value(p[key])}')
+            if "rot_axes" in p:
+                items = ", ".join(f'"{a}"' for a in p["rot_axes"])
+                lines.append(f'rot_axes = [{items}]')
+            if "joint_offsets" in p:
+                lines.append("joint_offsets = [")
+                for row in p["joint_offsets"]:
+                    inner = ", ".join(str(v) for v in row)
+                    lines.append(f"  [{inner}],")
+                lines.append("]")
+            lines.append("")
+
+        return "\n".join(lines)
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -181,4 +238,4 @@ if __name__ == "__main__":
 
     generator = RobotConfigGenerator(xml_path)
     config = generator.generate()
-    yaml.dump(config, sys.stdout, default_flow_style=None, sort_keys=False)
+    print(generator._toml_string(config))

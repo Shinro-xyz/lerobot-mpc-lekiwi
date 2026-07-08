@@ -27,12 +27,12 @@ import time
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from lekiwi_sim import RobotSim
+from simulation import RobotSim
 from factories import TrajectoryFactory
 
 HERE = Path(__file__).parent.parent
 OUTPUT_PATH = str(HERE / "lekiwi_arm_demo.gif")
-CONFIG_PATH = str(HERE / "robot_config.yaml")
+CONFIG_PATH = str(HERE / "robot_config.toml")
 
 sim = RobotSim(CONFIG_PATH)
 sim.reset()
@@ -41,7 +41,7 @@ arm_joint_names = sim.config["joint_groups"]["arm_joints"]
 ee_home = sim.arm.get_state()[:3].copy()
 print(f"EE home position: x={ee_home[0]:.3f}, y={ee_home[1]:.3f}, z={ee_home[2]:.3f}")
 
-offset_schedule = TrajectoryFactory(str(HERE / "configs/trajectories/arm_extension.yaml")).create()
+offset_schedule = TrajectoryFactory(str(HERE / "configs/trajectories/arm_extension.toml")).create()
 ee_ref_pos = ee_home + offset_schedule
 total_steps = len(ee_ref_pos)
 print(f"Trajectory: {total_steps} steps ({total_steps * 0.02:.1f}s)")

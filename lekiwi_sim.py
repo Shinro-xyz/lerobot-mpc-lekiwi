@@ -1,29 +1,21 @@
-# FILE: lekiwi_sim.py (simulation orchestration)
+# FILE: lekiwi_sim.py (LeKiwi-specific simulation)
 """
-Simulation orchestration for the LeKiwi robot.
+LeKiwi-specific convenience wrapper. Kept for backward compatibility.
 
-Provides LeKiwiSim (convenience wrapper), RobotSim (generic YAML factory),
-run_simulation (closed-loop runner), and interactive_viewer.
-
-The MuJoCoEngine lives in physics_engine/mujoco.py.
+The generic RobotSim now lives in simulation/robotsim.py.
 """
 
 import numpy as np
 import mujoco
-import mujoco.viewer
 from pathlib import Path
-from typing import Optional, Callable, Any
-import yaml
 
-from components import Controller
 from physics_engine.mujoco import MuJoCoEngine
+from simulation.robotsim import RobotSim  # noqa: F401 — re-export
 
-# ── Paths ──────────────────────────────────────────────────────────────────
 HERE = Path(__file__).parent
 MJCF_PATH = str(HERE / "lekiwi-sim" / "mjcf_lcmm_robot.xml")
 
 
-# ── LeKiwiSim (convenience wrapper) ───────────────────────────────────────
 class LeKiwiSim:
     """
     High-level wrapper that connects ArmRobot + HolonomicMobileRobot
@@ -31,10 +23,10 @@ class LeKiwiSim:
 
     Usage:
         sim = LeKiwiSim()
-        sim.arm.step(target_joints)       # MuJoCo-backed arm
-        sim.base.step(target_velocity)     # MuJoCo-backed base
-        sim.engine.step()                 # advance physics
-        arm_state = sim.arm.get_state()   # read from MuJoCo
+        sim.arm.step(target_joints)
+        sim.base.step(target_velocity)
+        sim.step()
+        arm_state = sim.arm.get_state()
     """
 
     ARM_JOINT_NAMES   = ["Rotation", "Pitch", "Elbow", "Wrist_Pitch", "Wrist_Roll", "Jaw"]
@@ -50,7 +42,6 @@ class LeKiwiSim:
 
         self.engine = MuJoCoEngine(dt=dt, xml_string=xml_string, assets=assets)
 
-        # Arm: 6-DOF, limits from MuJoCo, offsets and axes from the MJCF model
         rot_axes = ["y", "z", "z", "x", "z", "z"]
 
         link_offsets = np.array([
@@ -65,22 +56,14 @@ class LeKiwiSim:
         arm_limits = np.array([self.engine.get_joint_limits(n) for n in self.ARM_JOINT_NAMES])
 
         self.arm = ArmRobot(
-            num_dof=6,
-            dt=dt,
-            joint_limits=arm_limits,
-            joint_offsets=link_offsets,
-            rot_axes=rot_axes,
-            joint_names=self.ARM_JOINT_NAMES,
+            num_dof=6, dt=dt, joint_limits=arm_limits, joint_offsets=link_offsets,
+            rot_axes=rot_axes, joint_names=self.ARM_JOINT_NAMES,
             ee_body_name="Moving_Jaw_08d-v1",
         )
         self.arm.physics_engine(self.engine)
 
         self.base = HolonomicMobileRobot(
-            num_wheels=3,
-            radius_robots=0.12,
-            gamma=-np.pi / 2,
-            radius_wheels=0.09,
-            dt=dt,
+            num_wheels=3, radius_robots=0.12, gamma=-np.pi / 2, radius_wheels=0.09, dt=dt,
         )
         self.base.physics_engine(self.engine)
 
@@ -106,147 +89,20 @@ class LeKiwiSim:
         return self.engine.get_sensor_data()
 
 
-# ── RobotSim (generic factory from YAML config) ──────────────────────────
-class RobotSim:
-    """
-    Generic robot simulation factory. Reads a YAML config and creates the
-    engine, plants, and wiring automatically.
-
-    Usage:
-        sim = RobotSim("robot_config.yaml")
-        sim.arm.step(twist)
-        sim.base.step(velocity)
-        sim.step()
-        state = sim.get_state()
-    """
-
-    def __init__(self, config_path: str, xml_string: str = None, assets: dict = None):
-        with open(config_path) as f:
-            self.config = yaml.safe_load(f)
-
-        dt = self.config.get("dt", 0.02)
-        model_path = self.config.get("model", "")
-
-        if xml_string is not None:
-            self.engine = MuJoCoEngine(dt=dt, xml_string=xml_string, assets=assets)
-        else:
-            self.engine = MuJoCoEngine(model_path=model_path, dt=dt)
-
-        # Build joint group name→name-list mapping
-        joint_groups = self.config.get("joint_groups", {})
-
-        # Instantiate each plant from config via registry
-        self._plants = {}
-        for plant_cfg in self.config.get("plants", []):
-            ptype = plant_cfg["type"]
-            pname = plant_cfg["name"]
-
-            from factories.registry import _PLANT_REGISTRY
-            cls = _PLANT_REGISTRY[ptype]
-            plant_config = {**plant_cfg, "joint_groups": joint_groups, "engine": self.engine, "dt": dt}
-            plant = cls.from_config(plant_config)
-
-            self._plants[pname] = plant
-            setattr(self, pname, plant)
-
-    def reset(self):
-        self.engine.reset()
-        for name, plant in self._plants.items():
-            if hasattr(plant, 'state') and isinstance(plant.state, np.ndarray):
-                plant.state = np.zeros_like(plant.state)
-
-    def step(self):
-        self.engine.step()
-        # LeKiwi-specific: teleport free joint to match kinematic base state
-        if hasattr(self, 'base') and hasattr(self.engine, 'has_free_joint') and self.engine.has_free_joint:
-            base_state = self.base.state
-            self.engine.data.qpos[0] = base_state[0]
-            self.engine.data.qpos[1] = base_state[1]
-            self.engine.data.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-            self.engine.data.qvel[:6] = 0.0
-            if hasattr(self.base, '_target_wheel_delta') and self.base._target_wheel_delta is not None:
-                drive_joints = self.config.get("joint_groups", {}).get("drive_joints", [])
-                for name, delta in zip(drive_joints, self.base._target_wheel_delta):
-                    jid = self.engine._joint_name_to_id[name]
-                    qpos_adr = self.engine.model.jnt_qposadr[jid]
-                    self.engine.data.qpos[qpos_adr] += delta
-                self.base._target_wheel_delta = None
-
-    def get_state(self) -> dict:
-        return self.engine.get_sensor_data()
-
-    def get_plant(self, name: str) -> Any:
-        return self._plants.get(name)
-
-
-def run_simulation(
-    sim,
-    controller: Controller,
-    max_steps: int = 1000,
-    render: bool = True,
-    callback: Optional[Callable] = None,
-):
-    """
-    Run a closed-loop simulation with optional viewer.
-
-    The controller receives the full qpos vector and returns a full ctrl vector.
-    `sim` must have `.engine` (MuJoCoEngine), `.reset()`, and `.step()`.
-    """
-    sim.reset()
-
-    if render:
-        with mujoco.viewer.launch_passive(sim.engine.model, sim.engine.data) as viewer:
-            viewer.cam.distance = 2.0
-            viewer.cam.azimuth = 90
-            viewer.cam.elevation = -30
-
-            for step in range(max_steps):
-                state = sim.engine.get_full_qpos()
-                action = controller.compute(state)
-                sim.engine.set_full_ctrl(action)
-                sim.engine.step()
-
-                if callback:
-                    callback(step, sim)
-
-                viewer.sync()
-                import time
-                time.sleep(sim.engine.dt / 4)
-
-                if not viewer.is_running():
-                    break
-    else:
-        for step in range(max_steps):
-            state = sim.engine.get_full_qpos()
-            action = controller.compute(state)
-            sim.engine.set_full_ctrl(action)
-            sim.engine.step()
-
-            if callback:
-                callback(step, sim)
-
-
-# ── Interactive Viewer ────────────────────────────────────────────────────
-def interactive_viewer(model_path: str = MJCF_PATH):
-    """Open an interactive MuJoCo viewer for manual inspection."""
-    model = mujoco.MjModel.from_xml_path(model_path)
-    data = mujoco.MjData(model)
-
-    with mujoco.viewer.launch_passive(model, data) as viewer:
-        print("Interactive viewer opened. Close window to exit.")
-        while viewer.is_running():
-            mujoco.mj_step(model, data)
-            viewer.sync()
-
-
-# ── Main ──────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
 
     if "--viewer" in sys.argv:
-        interactive_viewer()
+        engine = MuJoCoEngine()
+        model = engine.model
+        data = engine.data
+        import mujoco.viewer
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            print("Interactive viewer opened. Close window to exit.")
+            while viewer.is_running():
+                mujoco.mj_step(model, data)
+                viewer.sync()
     else:
-        # Smoke test
         engine = MuJoCoEngine()
         engine.print_info()
 

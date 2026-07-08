@@ -38,7 +38,8 @@ import time
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from lekiwi_sim import RobotSim, MJCF_PATH, HERE as LEKIWI_HOME
+from simulation import RobotSim
+from lekiwi_sim import MJCF_PATH, HERE as LEKIWI_HOME
 from factories import ControllerFactory, EstimatorFactory, TrajectoryFactory
 
 HERE = Path(__file__).parent.parent
@@ -94,16 +95,16 @@ def inject_free_joint(xml_string):
     return ET.tostring(root, encoding='unicode')
 
 # ── Build waypoint schedule ──────────────────────────────────────────────
-traj_config = f"configs/trajectories/base_{TRAJECTORY}.yaml"
+traj_config = f"configs/trajectories/base_{TRAJECTORY}.toml"
 base_schedule = TrajectoryFactory(str(HERE / traj_config)).create()
 total_steps = len(base_schedule)
 
 # Extract waypoints for markers
 BASE_WAYPOINTS = []
 BASE_WAYPOINT_STEPS = []
-with open(HERE / traj_config) as f:
-    import yaml
-    cfg = yaml.safe_load(f)
+with open(HERE / traj_config, "rb") as f:
+    import tomllib
+    cfg = tomllib.load(f)
     for wp in cfg["waypoints"]:
         pos = tuple(wp["position"])
         if not BASE_WAYPOINTS or pos != tuple(BASE_WAYPOINTS[-1]):
@@ -122,16 +123,16 @@ for fname in mesh_dir.iterdir():
         assets[fname.name] = fname.read_bytes()
 
 xml = inject_free_joint(inject_waypoint_markers(base_xml, BASE_WAYPOINTS, BASE_WAYPOINT_STEPS))
-sim = RobotSim(str(HERE / "robot_config.yaml"), xml_string=xml, assets=assets)
+sim = RobotSim(str(HERE / "robot_config.toml"), xml_string=xml, assets=assets)
 sim.reset()
 
 # ── Controller ───────────────────────────────────────────────────────────
-ctrl_config = f"configs/controllers/{CONTROLLER}_base.yaml"
+ctrl_config = f"configs/controllers/{CONTROLLER}_base.toml"
 base_ctrl = ControllerFactory(str(HERE / ctrl_config)).create()
 CTRL_LABEL = CONTROLLER.upper()
 
 # ── Estimator ────────────────────────────────────────────────────────────
-base_observer = EstimatorFactory(str(HERE / "configs/estimators/luenberger_base.yaml")).create()
+base_observer = EstimatorFactory(str(HERE / "configs/estimators/luenberger_base.toml")).create()
 
 # ── Noise ────────────────────────────────────────────────────────────────
 NOISE_BASE_POS = 0.02

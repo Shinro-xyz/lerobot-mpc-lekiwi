@@ -1,6 +1,6 @@
 # Lekiwi MPC — Whole-Body Control Framework
 
-A clean, modular control framework built on four abstract base classes — **Controller**, **Plant**, **StateEstimator**, and **TrajectoryGenerator** — with concrete implementations for the lekiwi robot's holonomic base and 6-DOF arm. Designed for the Shinro robotics IDE integration.
+A clean, modular control framework built on four abstract base classes — **Controller**, **Plant**, **StateEstimator**, and **TrajectoryGenerator** — with concrete implementations for the lekiwi robot's holonomic base and 6-DOF arm.
 
 ## Architecture
 
@@ -18,142 +18,201 @@ flowchart TB
         TG --> QP[QuinticPolynomial]
     end
 
-    subgraph Plants["Concrete Plants"]
-        HMR -->|"3-DOF (x, y, θ)"| HMR_desc["Omni-wheel kinematics<br/>step: velocity → wheel speeds"]
-        AR -->|"6-DOF Cartesian"| AR_desc["FK · Jacobian · IK<br/>step: integrate pose → IK → joints"]
-        AR --> SO[SO-ARM100]
-        SO -->|position-controlled servos| SO_desc["Inherits ArmRobot<br/>just configures params"]
+    subgraph Factories["Registry-Based Factories"]
+        CF[ControllerFactory] -->|from_config| C
+        EF[EstimatorFactory] -->|from_config| SE
+        TF[TrajectoryFactory] -->|from_config| TG
+        PF[Plant Registry] -->|from_config| P
     end
 
-    subgraph Controllers["Concrete Controllers"]
-        PID --> PID_desc["Joint-space position<br/>Anti-windup"]
-        MPC --> MPC_desc["Trajectory optimization<br/>OSQP QP solver"]
-        LQR --> LQR_desc["Regulation / stabilization<br/>DARE solve"]
+    subgraph Sim["Simulation"]
+        Eng[PhysicsEngine ABC] --> MJ[MuJoCoEngine]
+        MJ -->|joint angles| Plants
+        RS[RobotSim] -->|reads YAML| Eng
+        RS -->|creates| Plants
     end
 
-    subgraph Estimators["Concrete State Estimators"]
-        KF --> KF_desc["Discrete Kalman filter<br/>predict-update cycle"]
-        LO --> LO_desc["Observer dynamics<br/>x̂ = Ax̂ + Bu + L(y − Cx̂)"]
+    subgraph Config["YAML Configuration"]
+        RC[robot_config.toml] -->|robot + plants| RS
+        CC[configs/controllers/*.toml] -->|controller params| CF
+        EC[configs/estimators/*.toml] -->|estimator params| EF
+        TC[configs/trajectories/*.toml] -->|waypoints| TF
     end
 
-    subgraph Trajectories["Concrete Trajectory Generators"]
-        CP --> CP_desc["Cubic polynomial<br/>Closed-form coefficients<br/>Position + velocity continuity"]
-        QP --> QP_desc["Quintic polynomial<br/>Matrix solve or closed-form<br/>Position + velocity + acceleration continuity"]
-    end
-
+    Factories -->|instantiate| ABCs
+    Config --> Factories
     Controllers -->|u = control input| Plants
     Plants -->|state feedback| Controllers
     Plants -->|measurements| Estimators
     Estimators -->|state estimates| Controllers
     Trajectories -->|reference path| Controllers
-
-    subgraph Sim["Simulation"]
-        MJ[MuJoCo] -->|joint angles| Plants
-    end
-
-    subgraph Integration["Planned"]
-        SH[Shinro IDE] --> Controllers
-    end
 ```
 
 ## Key Design Decisions
 
+### Registry Pattern
+Every concrete class registers itself with a decorator — `@register_controller("LQR")`, `@register_plant("ArmRobot")`, etc. Factories are 3-line generics that look up the class by name from the YAML config. To add a new controller, estimator, trajectory, or plant: create the class, add the decorator + `from_config`, and a YAML config file — no factory code changes.
+
+### YAML-Driven Configuration
+All robot, controller, estimator, and trajectory parameters live in YAML files. The same demo script can run LQR or MPC by changing `--controller lqr` to `--controller mpc` — no code changes.
+
+### Separated Physics Engine
+The `PhysicsEngine` ABC decouples plants from MuJoCo. `MuJoCoEngine` implements it, but any engine (PyBullet, Drake, Isaac Sim) can be swapped in. Plants talk to the engine through the protocol — no direct MuJoCo imports in plant code.
+
 ### Cartesian Arm Abstraction
-The arm's `step()` method takes a Cartesian velocity twist `[dx, dy, dz, droll, dpitch, dyaw]`, integrates it into a target pose, runs inverse kinematics internally, and sends joint angles to the servos. The controller **never touches joint space** — it thinks it's controlling a 6-DOF Cartesian plant.
-
-```
-Controller: [dx, dy, dz, droll, dpitch, dyaw]
-    ↓
-step(u): state += dt·u → _pose_to_transform() → IK → joint angles
-    ↓
-Servos
-```
-
-### Clean Separation of Concerns
-- **Controller** = algorithm (MPC, PID, LQR)
-- **Plant** = what you're controlling (base, arm)
-- **StateEstimator** = what you measure (KalmanFilter, LuenbergerObserver)
-- **TrajectoryGenerator** = reference path (cubic, quintic, more coming)
-
-Swap any controller onto any plant, any estimator onto any plant, any trajectory onto any controller — same interface.
-
-### Verified Kinematics
-- Forward kinematics via homogeneous transforms
-- Geometric Jacobian verified against numerical differentiation (max error: 0.00018)
-- Inverse kinematics with damped pseudoinverse + step clamp (converges from zero to any reachable pose)
-- Full round-trip test: Cartesian state → IK → FK → state matches
+The arm's `step()` method takes a Cartesian velocity twist `[dx, dy, dz, droll, dpitch, dyaw]`, integrates it into a target pose, runs inverse kinematics internally, and sends joint angles to the servos. The controller **never touches joint space**.
 
 ## Project Structure
 
 ```
 lerobot-mpc-lekiwi/
-├── components.py              # ABCs: Controller, Plant, StateEstimator, TrajectoryGenerator
-├── __init__.py                # Package marker
+├── components.py              # ABCs: PhysicsEngine, Controller, Plant, StateEstimator, TrajectoryGenerator
 │
-├── trajectories/              # Reference path generators
+├── physics_engine/
+│   ├── __init__.py             # Re-exports PhysicsEngine, MuJoCoEngine
+│   └── mujoco.py              # MuJoCoEngine — generic, name-based joint access
+│
+├── factories/
+│   ├── __init__.py             # Auto-imports all packages to trigger @register decorators
+│   ├── registry.py             # 4 registries + 4 decorators (controller, estimator, trajectory, plant)
+│   ├── controller_factory.py   # Generic: lookup → from_config
+│   ├── estimator_factory.py    # Generic: lookup → from_config
+│   └── trajectory_factory.py   # Generic: lookup → from_config
+│
+├── simulation/
+│   ├── __init__.py             # Exports RobotSim
+│   └── robotsim.py             # RobotSim — generic factory from YAML config
+│
+├── lekiwi_sim.py               # LeKiwiSim — LeKiwi-specific convenience wrapper (backward compat)
+│
+├── plants/
 │   ├── __init__.py
-│   ├── cubic_polynomial.py    # 3rd-order, position + velocity continuity
-│   └── quintic_polynomial.py # 5th-order, position + velocity + acceleration continuity
+│   ├── armirobot.py            # 6-DOF arm: FK, Jacobian, IK, Cartesian step
+│   └── holonomicmobilerobot.py # 3-DOF base with omni-wheel kinematics
 │
-├── controllers/               # Control algorithms
+├── controllers/
 │   ├── __init__.py
-│   ├── lqr.py                 # LQR with DARE solve
-│   ├── pid.py                 # PID with anti-windup
-│   └── mpc_lti.py             # MPC with OSQP QP solver
+│   ├── lqr.py                  # LQR with DARE solve
+│   ├── pid.py                  # PID with anti-windup
+│   └── mpc_lti.py              # MPC with OSQP QP solver
 │
-├── plants/                    # Robot models
+├── estimators/
 │   ├── __init__.py
-│   ├── armrobot.py            # 6-DOF arm: FK, Jacobian, IK, Cartesian step
-│   └── holonomicmobilerobot.py# 3-DOF base with omni-wheel kinematics
+│   ├── kalman_filter.py        # Discrete Kalman filter
+│   └── luenberger_observer.py  # Luenberger observer
 │
-├── estimators/                # State estimation
+├── trajectories/
 │   ├── __init__.py
-│   ├── kalman_filter.py       # Discrete Kalman filter
-│   └── luenberger_observer.py # Luenberger observer
+│   ├── cubic_polynomial.py     # 3rd-order, position + velocity continuity
+│   └── quintic_polynomial.py   # 5th-order, position + velocity + acceleration continuity
 │
-├── lekiwi-sim/                # MuJoCo simulation files
-│   ├── mjcf_lcmm_robot.xml    # Full robot model
-│   ├── so_arm100.xml          # SO-ARM100 arm model
-│   └── meshes/                # STL meshes for all parts
+├── configs/
+│   ├── controllers/
+│   │   ├── lqr_base.toml       # LQR weights for base tracking
+│   │   └── mpc_base.toml       # MPC horizon, weights, constraints
+│   ├── estimators/
+│   │   └── luenberger_base.toml # Observer gain
+│   └── trajectories/
+│       ├── base_straight.toml   # Waypoints for straight line
+│       ├── base_triangle.toml   # Waypoints for triangle
+│       ├── arm_extension.toml   # Cubic segments for EE motion
+│       └── pick_and_place.toml  # Phase list for pick-and-place
 │
-├── lekiwi_sim.py              # MuJoCo simulation wrapper
-├── demo_base_movement.py      # Base tracking demo (LQR/MPC + observer)
-├── capture_gif.py             # Arm extension demo (cubic trajectory + IK)
-├── capture_demo.py            # Pick-and-place GIF capture
-├── test_pick_and_place.py     # Integration tests
+├── robot_config.toml           # LeKiwi robot definition (auto-generated from XML)
+│
+├── demos/
+│   ├── __init__.py
+│   ├── helpers.py              # Shared: renderer, viewer, GIF, plot utilities
+│   ├── demo_simple.py          # Terminal-only demo (no graphs, no viewer)
+│   ├── demo_arm_trajectory.py  # Arm EE trajectory with live plot + GIF
+│   ├── demo_base_tracking.py   # Base tracking with LQR/MPC + observer
+│   └── demo_pick_and_place.py  # Full pick-and-place sequence
+│
+├── scripts/
+│   └── generate_robot_config.py # Auto-generate robot_config.toml from MJCF XML
+│
+├── deprecated/                 # Old demo scripts (moved, not deleted)
+│   ├── capture_demo.py
+│   ├── capture_gif.py
+│   └── demo_base_movement.py
+│
+├── lekiwi-sim/
+│   ├── mjcf_lcmm_robot.xml     # Full robot MuJoCo model
+│   ├── so_arm100.xml           # SO-ARM100 arm model (unused)
+│   └── meshes/                 # STL meshes for all parts
+│
+├── test_pick_and_place.py      # Integration tests
 ├── lab-notes/
-│   └── daily/                 # Experiment logs (auto-indexed on commit)
-├── AGENTS.md                  # LLM codebase index instructions
-├── .codebase/                 # SQLite codebase index (auto-generated)
+│   └── daily/                  # Experiment logs (auto-indexed on commit)
+├── AGENTS.md                   # LLM codebase index instructions
+├── .codebase/                  # SQLite codebase index (auto-generated)
 └── README.md
 ```
 
 ## Quick Start
 
 ```bash
-# Clone
-git clone https://github.com/adilfaisal01/lerobot-mpc-lekiwi
-cd lerobot-mpc-lekiwi
-
 # Dependencies
-pip install numpy scipy osqp
+pip install numpy scipy osqp mujoco
 
-# Generate a smooth trajectory
-python3 -c "
-import numpy as np
-from trajectories import QuinticPolynomial
+# Run a simple terminal demo (no graphs, no viewer)
+python -m demos.demo_simple
 
-traj = QuinticPolynomial()
-traj.generate(
-    start_position=np.array([0.0, 0.0, 0.0]),
-    end_position=np.array([1.0, 0.5, 0.3]),
-    duration=2.0,
-)
+# Run with GIF capture
+python -m demos.demo_simple --gif
 
-for t in [0.0, 0.5, 1.0, 1.5, 2.0]:
-    pos, vel, acc = traj.position_at(t)
-    print(f't={t:.1f}: pos={pos}  vel={vel}  acc={acc}')
-"
+# Arm trajectory demo with live viewer
+python -m demos.demo_arm_trajectory
+
+# Base tracking with LQR + observer
+python -m demos.demo_base_tracking
+
+# Base tracking with MPC
+python -m demos.demo_base_tracking --controller mpc
+
+# Triangle path
+python -m demos.demo_base_tracking --trajectory triangle
+
+# Headless GIF capture
+python -m demos.demo_arm_trajectory --gif
+python -m demos.demo_base_tracking --gif --controller mpc --trajectory triangle
+python -m demos.demo_pick_and_place
+```
+
+## Usage Patterns
+
+### Programmatic (low-level)
+
+```python
+from physics_engine import MuJoCoEngine
+from plants.armrobot import ArmRobot
+
+engine = MuJoCoEngine("path/to/model.xml")
+arm = ArmRobot(num_dof=6, dt=0.02, ...)
+arm.physics_engine(engine)
+arm.step(np.array([0.05, 0.0, 0.0, 0.0, 0.0, 0.0]))
+```
+
+### YAML-driven (generic)
+
+```python
+from simulation import RobotSim
+from factories import ControllerFactory, TrajectoryFactory
+
+sim = RobotSim("robot_config.toml")
+ctrl = ControllerFactory("configs/controllers/lqr_base.toml").create()
+schedule = TrajectoryFactory("configs/trajectories/base_straight.toml").create()
+
+for step, target in enumerate(schedule):
+    u = ctrl.compute(sim.base.get_state(), target)
+    sim.base.step(u)
+    sim.step()
+```
+
+### Auto-generate config from XML
+
+```bash
+python scripts/generate_robot_config.py lekiwi-sim/mjcf_lcmm_robot.xml > robot_config.toml
 ```
 
 ## Controllers
@@ -161,36 +220,71 @@ for t in [0.0, 0.5, 1.0, 1.5, 2.0]:
 | Controller | Plant | Use Case |
 |-----------|-------|----------|
 | **PID** | Arm (joint space) | Position servo — send joint angles directly |
-| **MPC_LTI** | Base (3D) | Trajectory optimization for holonomic drive |
-| **MPC_LTI** | Arm (6D Cartesian) | End-effector trajectory — IK handles joint math |
+| **MPC_DeltaU** | Base (3D) | Trajectory optimization with Δu regularization |
 | **LQR** | Base (3D) | Regulation / stabilization |
-
-## Trajectory Generators
-
-| Generator | DOF | Continuity | Use Case |
-|-----------|-----|------------|----------|
-| **CubicPolynomial** | 3D (x, y, z) | Position + velocity | Smooth point-to-point, no accel constraints |
-| **QuinticPolynomial** | 3D (x, y, z) | Position + velocity + acceleration | Smooth point-to-point with accel limits, rest-to-rest (min-jerk) |
-
-Both support arbitrary 3D start/end positions via numpy broadcasting — one solve, all dimensions.
 
 ## State Estimators
 
-| Estimator | Plant | Use Case |
-|-----------|-------|----------|
-| **KalmanFilter** | Any LTI system | Optimal state estimation with process/measurement noise |
-| **LuenbergerObserver** | Any LTI system | Deterministic state estimation with user-specified gain |
+| Estimator | Use Case |
+|-----------|----------|
+| **KalmanFilter** | Optimal state estimation with process/measurement noise |
+| **LuenbergerObserver** | Deterministic state estimation with user-specified gain |
+
+## Trajectory Generators
+
+| Generator | Continuity | Config `type` |
+|-----------|------------|---------------|
+| **CubicPolynomial** | Position + velocity | `cubic_segments` |
+| **QuinticPolynomial** | Position + velocity + acceleration | `quintic_segments` |
+| **WaypointSchedule** | Piecewise constant | `waypoints` |
+| **PhaseSchedule** | Multi-signal (arm + base + jaw) | `phase_list` |
+
+## Adding a New Component
+
+### New controller
+```python
+@register_controller("MyType")
+class MyController(Controller):
+    @classmethod
+    def from_config(cls, config):
+        return cls(...)
+```
+Create `configs/controllers/my_type.toml` with `type = "MyType"`. Done.
+
+### New plant
+```python
+@register_plant("MyRobot")
+class MyRobot(Plant):
+    @classmethod
+    def from_config(cls, config):
+        return cls(...)
+```
+Add to `robot_config.toml` under `plants`. Done.
+
+### New physics engine
+```python
+from components import PhysicsEngine
+
+class MyEngine(PhysicsEngine):
+    def get_joint_qpos(self, name): ...
+    def set_joint_ctrl(self, name, value): ...
+    # ... implement all abstract methods
+```
+Plants accept it automatically — no changes needed.
 
 ## Status
 
+- ✅ PhysicsEngine ABC + MuJoCoEngine (generic, name-based)
 - ✅ Base kinematics (3-DOF holonomic)
 - ✅ Arm kinematics (6-DOF: FK, Jacobian, IK)
 - ✅ Cartesian state + IK-in-step pipeline
-- ✅ Trajectory generators: CubicPolynomial, QuinticPolynomial
-- ✅ PID, MPC_LTI, LQR controllers
+- ✅ Trajectory generators: Cubic, Quintic, Waypoint, Phase
+- ✅ PID, MPC_DeltaU, LQR controllers
 - ✅ KalmanFilter, LuenbergerObserver state estimators
-- ✅ Organized subpackage structure (trajectories/, controllers/, plants/, estimators/)
-- 🔄 Combined state space (base + arm coupling) — *in progress*
+- ✅ Registry-based factories (add via decorator, no code changes)
+- ✅ RobotSim — YAML-driven generic simulation factory
+- ✅ Auto-generate robot config from MJCF XML
+- ✅ YAML-configurable controllers, estimators, trajectories
+- ✅ Demo scripts: simple, arm, base tracking, pick-and-place
 - 🔄 More trajectory types (min-jerk, trapezoidal, S-curve, Bézier) — *planned*
-- 🔄 MuJoCo closed-loop simulation — *in progress*
 - 🔄 Shinro IDE integration — *planned*
