@@ -13,10 +13,16 @@ def controllabilty(A:np.ndarray, B:np.ndarray):
     for i in range(1,n):
         cols.append(A@cols[-1])
 
-    cols=np.hstack(cols)
+    C=np.hstack(cols)
 
-    # check the rank of the matrix
-    rank=np.linalg.matrix_rank(cols)
-    
-    
+    # check the rank of the matrix and controllability
+    rank=np.linalg.matrix_rank(C)
+    is_controllable=(rank==n)
+
+    # checking for singular values
+    U,s,t= np.linalg.svd(C)
+
+    return C, is_controllable, rank
+
+def observability(A: np.ndarray, C:np.ndarray):
     
