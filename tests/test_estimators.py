@@ -4,11 +4,15 @@ from utils.array_backend import NumpyBackend
 
 
 def _to_np(x, bk):
+    """Convert a backend array to numpy for assertion comparisons."""
     return bk.to_numpy(x) if hasattr(bk, 'to_numpy') else x
 
 
 class TestKalmanFilter:
+    """Verify Kalman filter: estimate shape, PSD properties, convergence, and reset."""
+
     def test_estimate_shape(self, bk):
+        """estimate() returns a state vector of shape (n_x, 1)."""
         from estimators.kalman_filter import KalmanFilter
         n, m, p = 2, 1, 2
         A = bk.eye(n)
@@ -23,6 +27,7 @@ class TestKalmanFilter:
         assert _to_np(x, bk).shape == (n, 1)
 
     def test_P_remains_psd(self, bk):
+        """The error covariance P remains positive semidefinite after multiple updates."""
         from estimators.kalman_filter import KalmanFilter
         n, p = 2, 2
         A = 0.9 * bk.eye(n)
@@ -40,6 +45,7 @@ class TestKalmanFilter:
         assert np.all(eigs > -1e-10)
 
     def test_innovation_covariance_psd(self, bk):
+        """The innovation covariance S = C P_pred C^T + R is positive semidefinite."""
         from estimators.kalman_filter import KalmanFilter
         n, p = 2, 2
         A = 0.9 * bk.eye(n)
@@ -57,6 +63,7 @@ class TestKalmanFilter:
         assert np.all(eigs > -1e-10)
 
     def test_estimate_converges_1d(self, bk):
+        """The Kalman filter estimate tracks the true state for a detectable (A, C) pair."""
         from estimators.kalman_filter import KalmanFilter
         A = bk.array([[0.9]])
         B = bk.array([[1.0]])
@@ -74,6 +81,7 @@ class TestKalmanFilter:
         assert error < 1.0
 
     def test_reset(self, bk):
+        """reset() clears the state estimate to zero."""
         from estimators.kalman_filter import KalmanFilter
         n = 2
         A = 0.9 * bk.eye(n)
@@ -90,7 +98,10 @@ class TestKalmanFilter:
 
 
 class TestLuenbergerObserver:
+    """Verify Luenberger observer: estimate shape, stability, convergence, and reset."""
+
     def test_estimate_shape(self, bk):
+        """estimate() returns a state vector of shape (n_x, 1)."""
         from estimators.luenberger_observer import LuenbergerObserver
         n, m, p = 2, 1, 2
         A = bk.eye(n)
@@ -104,6 +115,7 @@ class TestLuenbergerObserver:
         assert _to_np(x, bk).shape == (n, 1)
 
     def test_error_dynamics_stable(self, bk):
+        """The error dynamics matrix A - L @ C has all eigenvalues inside the unit circle."""
         from estimators.luenberger_observer import LuenbergerObserver
         n = 2
         A = 0.9 * bk.eye(n)
@@ -116,6 +128,7 @@ class TestLuenbergerObserver:
         assert np.all(np.abs(eigs) < 1)
 
     def test_estimate_converges_1d(self, bk):
+        """The Luenberger observer estimate converges to the true state for stable error dynamics."""
         from estimators.luenberger_observer import LuenbergerObserver
         A = bk.array([[0.9]])
         B = bk.array([[1.0]])
@@ -132,6 +145,7 @@ class TestLuenbergerObserver:
         assert error < 0.1
 
     def test_reset(self, bk):
+        """reset() clears the state estimate to zero."""
         from estimators.luenberger_observer import LuenbergerObserver
         n = 2
         A = 0.9 * bk.eye(n)

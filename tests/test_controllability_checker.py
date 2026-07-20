@@ -6,12 +6,16 @@ from utils.array_backend import NumpyBackend
 
 
 def _make_ana(A, B, C, dt=None, bk=None):
+    """Create an LTISystemsAnalyzer with a NumpyBackend."""
     bk = bk or NumpyBackend()
     return LTISystemsAnalyzer(A, B, C, dt=dt, backend=bk)
 
 
 class TestControllability:
+    """Verify the Kalman rank test for controllability."""
+
     def test_double_integrator_controllable(self):
+        """Double integrator with B = [0, 1]^T is controllable (rank = 2)."""
         A = np.array([[0, 1], [0, 0]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -19,6 +23,7 @@ class TestControllability:
         assert ana.is_controllable()
 
     def test_parallel_integrators_uncontrollable(self):
+        """Two identical integrators driven by the same input: rank = 1 < 2."""
         A = np.zeros((2, 2))
         B = np.array([[1], [1]], dtype=float)
         C = np.eye(2)
@@ -26,6 +31,7 @@ class TestControllability:
         assert not ana.is_controllable()
 
     def test_damped_oscillator_controllable(self):
+        """Damped oscillator with B = [0, 1]^T is controllable."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -33,6 +39,7 @@ class TestControllability:
         assert ana.is_controllable()
 
     def test_triple_integrator_controllable(self):
+        """Chain of three integrators is controllable."""
         A = np.array([[0, 1, 0], [0, 0, 1], [0, 0, 0]], dtype=float)
         B = np.array([[0], [0], [1]], dtype=float)
         C = np.eye(3)
@@ -40,6 +47,7 @@ class TestControllability:
         assert ana.is_controllable()
 
     def test_mimo_controllable(self):
+        """MIMO system with 2 inputs and 3 states is controllable."""
         A = np.array([[0, 1, 0], [0, 0, 1], [-6, -11, -6]], dtype=float)
         B = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)
         C = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
@@ -48,7 +56,10 @@ class TestControllability:
 
 
 class TestObservability:
+    """Verify the Kalman rank test for observability."""
+
     def test_double_integrator_observable(self):
+        """Double integrator with C = I is observable (rank = 2)."""
         A = np.array([[0, 1], [0, 0]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -56,6 +67,7 @@ class TestObservability:
         assert ana.is_observable()
 
     def test_velocity_only_unobservable(self):
+        """Only velocity is measured: observability matrix has rank = 1 < 2."""
         A = np.array([[0, 1], [0, 0]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.array([[0, 1]], dtype=float)
@@ -63,6 +75,7 @@ class TestObservability:
         assert not ana.is_observable()
 
     def test_damped_oscillator_observable(self):
+        """Damped oscillator with C = I is observable."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -71,7 +84,10 @@ class TestObservability:
 
 
 class TestGramianContinuous:
+    """Verify continuous-time Gramian properties."""
+
     def test_infinite_gramian_psd_for_hurwitz(self):
+        """Infinite-horizon Gramians are PSD for Hurwitz A."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -82,6 +98,7 @@ class TestGramianContinuous:
         assert np.all(np.linalg.eigvals(Wo) > -1e-10)
 
     def test_infinite_gramian_raises_for_unstable(self):
+        """Infinite-horizon Gramian raises ValueError for non-Hurwitz A."""
         A = np.array([[0, 1], [0, 0]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -90,6 +107,7 @@ class TestGramianContinuous:
             ana.controllability_gramian()
 
     def test_finite_gramian_works_for_unstable(self):
+        """Finite-horizon Gramian works even for unstable A."""
         A = np.array([[0, 1], [0, 0]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -98,6 +116,7 @@ class TestGramianContinuous:
         assert np.all(np.linalg.eigvals(Wc) > -1e-10)
 
     def test_finite_gramian_raises_for_nonpositive_T(self):
+        """Finite-horizon Gramian raises ValueError for T <= 0."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -108,6 +127,7 @@ class TestGramianContinuous:
             ana.controllability_gramian_finite(-1)
 
     def test_gramian_matches_lyapunov_solution(self):
+        """Controllability Gramian matches the direct Lyapunov solution."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -118,7 +138,10 @@ class TestGramianContinuous:
 
 
 class TestGramianDiscrete:
+    """Verify discrete-time Gramian properties."""
+
     def test_discrete_gramian_psd(self):
+        """Discrete Gramians are PSD for asymptotically stable A."""
         A = np.array([[0.9, 0.1], [0, 0.8]], dtype=float)
         B = np.array([[0], [0.1]], dtype=float)
         C = np.eye(2)
@@ -129,6 +152,7 @@ class TestGramianDiscrete:
         assert np.all(np.linalg.eigvals(Wo) > -1e-10)
 
     def test_discrete_gramian_raises_without_dt(self):
+        """Discrete Gramian raises ValueError when dt is None."""
         A = np.array([[0.9, 0.1], [0, 0.8]], dtype=float)
         B = np.array([[0], [0.1]], dtype=float)
         C = np.eye(2)
@@ -137,6 +161,7 @@ class TestGramianDiscrete:
             ana.discrete_controllability_gramian()
 
     def test_discrete_gramian_raises_for_unstable(self):
+        """Discrete Gramian raises ValueError for unstable A (|eig| >= 1)."""
         A = np.array([[1.1, 0], [0, 1.2]], dtype=float)
         B = np.array([[0], [0.1]], dtype=float)
         C = np.eye(2)
@@ -146,7 +171,10 @@ class TestGramianDiscrete:
 
 
 class TestHankelAndBalanced:
+    """Verify Hankel singular values and balanced realization."""
+
     def test_hankel_singular_values_sorted(self):
+        """Hankel singular values are sorted in descending order."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -155,6 +183,7 @@ class TestHankelAndBalanced:
         assert sigma[0] >= sigma[1] >= 0
 
     def test_balanced_realization_diagonal_gramians(self):
+        """Balanced Gramians are diagonal (off-diagonal sum < 1e-8)."""
         A = np.array([[0, 1, 0], [0, 0, 1], [-6, -11, -6]], dtype=float)
         B = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)
         C = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
@@ -175,6 +204,7 @@ class TestHankelAndBalanced:
         assert off_wo < 1e-8
 
     def test_balanced_realization_preserves_eigenvalues(self):
+        """Balanced transformation preserves the eigenvalues of A."""
         A = np.array([[0, 1, 0], [0, 0, 1], [-6, -11, -6]], dtype=float)
         B = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)
         C = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
@@ -183,6 +213,7 @@ class TestHankelAndBalanced:
         assert np.allclose(np.sort(np.linalg.eigvals(Ab)), np.sort(np.linalg.eigvals(A)))
 
     def test_balanced_truncation_shapes(self):
+        """Balanced truncation produces matrices of the correct reduced order."""
         A = np.array([[0, 1, 0], [0, 0, 1], [-6, -11, -6]], dtype=float)
         B = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)
         C = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
@@ -194,6 +225,7 @@ class TestHankelAndBalanced:
         assert Dr.shape == (2, 2)
 
     def test_balanced_truncation_error_bound(self):
+        """Balanced truncation stores a positive error bound."""
         A = np.array([[0, 1, 0], [0, 0, 1], [-6, -11, -6]], dtype=float)
         B = np.array([[1, 0], [0, 1], [0, 0]], dtype=float)
         C = np.array([[1, 0, 0], [0, 1, 0]], dtype=float)
@@ -203,6 +235,7 @@ class TestHankelAndBalanced:
         assert ana._cached_values["balanced_trunc_error_bound"] > 0
 
     def test_balanced_truncation_invalid_r(self):
+        """Balanced truncation raises ValueError for r = 0 or r > n."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -214,7 +247,10 @@ class TestHankelAndBalanced:
 
 
 class TestSpectralDiagnostics:
+    """Verify Gramian spectrum and condition number methods."""
+
     def test_gramian_spectrum(self):
+        """Gramian spectrum returns eigenvalues of the controllability Gramian."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -223,6 +259,7 @@ class TestSpectralDiagnostics:
         assert len(eigs) == 2
 
     def test_gramian_condition(self):
+        """Gramian condition returns a finite positive number for full-rank Gramians."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -231,6 +268,7 @@ class TestSpectralDiagnostics:
         assert cond > 0
 
     def test_gramian_spectrum_unknown(self):
+        """Gramian spectrum raises ValueError for an unknown identifier."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -239,6 +277,7 @@ class TestSpectralDiagnostics:
             ana.gramian_spectrum("Wx")
 
     def test_gramian_condition_unknown(self):
+        """Gramian condition raises ValueError for an unknown identifier."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -248,7 +287,10 @@ class TestSpectralDiagnostics:
 
 
 class TestUtility:
+    """Verify utility methods: rank_report, summary, reset_cache."""
+
     def test_rank_report(self):
+        """rank_report returns a dict with controllability and observability keys."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -258,6 +300,7 @@ class TestUtility:
         assert "observability" in report
 
     def test_summary(self):
+        """summary returns a string containing the system order."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -266,6 +309,7 @@ class TestUtility:
         assert "System order" in summary
 
     def test_reset_cache(self):
+        """reset_cache clears all memoised Gramian results."""
         A = np.array([[0, 1], [-1, -2]], dtype=float)
         B = np.array([[0], [1]], dtype=float)
         C = np.eye(2)
@@ -277,14 +321,19 @@ class TestUtility:
 
 
 class TestErrorHandling:
+    """Verify that invalid inputs raise appropriate errors."""
+
     def test_non_square_A(self):
+        """A must be square; a 3x2 matrix raises ValueError."""
         with pytest.raises(ValueError):
             _make_ana(np.array([[1, 2], [3, 4], [5, 6]]), np.eye(2), np.eye(2))
 
     def test_B_row_mismatch(self):
+        """B must have the same number of rows as A."""
         with pytest.raises(ValueError):
             _make_ana(np.eye(2), np.eye(3), np.eye(2))
 
     def test_C_col_mismatch(self):
+        """C must have the same number of columns as A."""
         with pytest.raises(ValueError):
             _make_ana(np.eye(2), np.eye(2), np.eye(3))

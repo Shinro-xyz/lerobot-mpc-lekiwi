@@ -4,11 +4,15 @@ from utils.array_backend import NumpyBackend
 
 
 def _to_np(x, bk):
+    """Convert a backend array to numpy for assertion comparisons."""
     return bk.to_numpy(x) if hasattr(bk, 'to_numpy') else x
 
 
 class TestLQR:
+    """Verify LQR gain computation against analytical DARE solution."""
+
     def test_lqr_gain_stabilizes_1d(self, bk):
+        """Closed-loop A - B @ K has eigenvalues inside the unit circle."""
         A = bk.eye(1)
         B = bk.eye(1)
         Q = bk.eye(1)
@@ -21,6 +25,7 @@ class TestLQR:
         assert np.all(np.abs(eigs) < 1)
 
     def test_lqr_gain_analytical_1d(self, bk):
+        """For A=1, B=1, Q=1, R=1, the DARE solution is P = (1+sqrt(5))/2 and K = P/(1+P)."""
         A = bk.eye(1)
         B = bk.eye(1)
         Q = bk.eye(1)
@@ -33,6 +38,7 @@ class TestLQR:
         assert np.allclose(K, K_expected, atol=1e-10)
 
     def test_lqr_dare_residual(self, bk):
+        """The DARE residual ||A^T P A - P - A^T P B (R + B^T P B)^{-1} B^T P A + Q|| is near zero."""
         A = bk.eye(1)
         B = bk.eye(1)
         Q = bk.eye(1)
@@ -45,6 +51,7 @@ class TestLQR:
         assert np.linalg.norm(residual) < 1e-10
 
     def test_lqr_compute_shape(self, bk):
+        """compute() returns a control vector of dimension n_u."""
         A = bk.eye(2)
         B = bk.eye(2)
         Q = bk.eye(2)
@@ -56,6 +63,7 @@ class TestLQR:
         assert _to_np(u, bk).shape == (2,)
 
     def test_lqr_regulation_to_zero(self, bk):
+        """compute(x) with no target returns u = -K @ x (regulation to origin)."""
         A = bk.eye(2)
         B = bk.eye(2)
         Q = bk.eye(2)
@@ -68,6 +76,7 @@ class TestLQR:
         assert np.allclose(_to_np(u, bk), _to_np(u_expected, bk))
 
     def test_lqr_from_config(self, bk):
+        """from_config creates a valid LQR controller with a gain matrix."""
         config = {"state_cost": [1.0, 1.0], "control_cost": [1.0, 1.0], "dt": 0.1}
         from controllers.lqr import LQR
         lqr = LQR.from_config(config, backend=bk)
@@ -75,7 +84,10 @@ class TestLQR:
 
 
 class TestPID:
+    """Verify PID controller: steady-state error, anti-windup, and reset."""
+
     def test_pid_derivative_zero_on_first_call(self, bk):
+        """Derivative term is zero on the first call (no previous error)."""
         from controllers.pid import PIDController
         pid = PIDController(
             kp=bk.array([1.0]),
@@ -89,6 +101,7 @@ class TestPID:
         assert np.allclose(_to_np(u, bk)[0], p_term)
 
     def test_pi_eliminates_steady_state_error(self, bk):
+        """PI control drives a first-order plant to the target with zero steady-state error."""
         from controllers.pid import PIDController
         pid = PIDController(
             kp=bk.array([1.0]),
@@ -105,6 +118,7 @@ class TestPID:
         assert np.allclose(_to_np(x, bk)[0], 1.0, atol=1e-2)
 
     def test_p_only_steady_state_error(self, bk):
+        """P-only control has non-zero steady-state error for a first-order plant."""
         from controllers.pid import PIDController
         Kp = 2.0
         pid = PIDController(
@@ -122,6 +136,7 @@ class TestPID:
         assert np.allclose(_to_np(x, bk)[0], 1.0, atol=1e-2)
 
     def test_pid_anti_windup(self, bk):
+        """When output is clamped, the integral term back-calculates on saturated channels."""
         from controllers.pid import PIDController
         lo = bk.array([-0.5])
         hi = bk.array([0.5])
@@ -141,6 +156,7 @@ class TestPID:
         assert np.allclose(_to_np(u, bk)[0], 0.5, atol=1e-3)
 
     def test_pid_reset(self, bk):
+        """reset() clears the integral accumulator and previous error."""
         from controllers.pid import PIDController
         pid = PIDController(
             kp=bk.array([1.0]),
@@ -156,6 +172,7 @@ class TestPID:
         assert not pid.has_run
 
     def test_pid_from_config(self, bk):
+        """from_config creates a valid PID controller."""
         config = {"kp": [1.0], "ki": [0.5], "kd": [0.1], "dt": 0.01}
         from controllers.pid import PIDController
         pid = PIDController.from_config(config, backend=bk)
@@ -163,7 +180,10 @@ class TestPID:
 
 
 class TestMPC:
+    """Verify MPC: H symmetry, F shape, constraint satisfaction, and from_config."""
+
     def test_mpc_H_symmetric(self, bk):
+        """The QP Hessian H is symmetric."""
         from controllers.mpc_lti import MPC_LTI
         n = 2
         m = 2
@@ -178,6 +198,7 @@ class TestMPC:
         assert np.allclose(H, H.T)
 
     def test_mpc_F_shape(self, bk):
+        """The QP linear term F has shape (n_x, N * n_u)."""
         from controllers.mpc_lti import MPC_LTI
         n = 2
         m = 2
@@ -192,6 +213,7 @@ class TestMPC:
         assert F.shape == (n, 5 * m)
 
     def test_mpc_compute_shape(self, bk):
+        """compute() returns a control vector of dimension n_u."""
         from controllers.mpc_lti import MPC_LTI
         n = 2
         m = 2
@@ -209,6 +231,7 @@ class TestMPC:
         assert _to_np(u, bk).shape == (m,)
 
     def test_mpc_constraints_respected(self, bk):
+        """MPC respects hard input constraints |u| <= bound."""
         from controllers.mpc_lti import MPC_LTI
         n = 2
         m = 2
@@ -228,6 +251,7 @@ class TestMPC:
         assert np.all(np.abs(u_val) <= bound + 1e-4)
 
     def test_mpc_from_config(self, bk):
+        """from_config creates a valid MPC controller with precomputed H and F."""
         config = {
             "horizon": 5,
             "state_cost": [1.0, 1.0],
