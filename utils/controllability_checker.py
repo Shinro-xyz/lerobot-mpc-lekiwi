@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.linalg import solve_continuous_lyapunov, solve_discrete_lyapunov
 
 class LTISystemsAnalyzer:
     def __init__(self, A:np.ndarray, B:np.ndarray= None, C:np.ndarray=None, D:np.ndarray= None, dt:float=None):
@@ -46,4 +47,60 @@ class LTISystemsAnalyzer:
     
         return O
 
-    def _rank_and_conidtion
+    def _rank_and_conidtion_check(self,M:np.ndarray):
+        rank=np.linalg.matrix_rank(M)
+        cond= np.linalg.cond(M) if rank==M.shape[0] else np.inf
+        return rank, cond
+
+    def is_controllable(self):
+        rank,_=self.controllabilty()
+        return rank==self.A.shape[0]
+
+    def is_observable(self):
+      rank,_= self.observability()
+      return rank==self.A.shape[0]
+
+    def _solve_continuous_lyapunov(self,Q:np.ndarray):
+        return solve_continuous_lyapunov(self.A,-Q)
+
+    def controllability_gramian(self) -> np.ndarray:
+        """
+        Infinite‑horizon controllability Gramian (continuous‑time).
+
+        Returns cached result unless the system has changed.  Raises
+        `ValueError` if A is not Hurwitz (unstable) because the integral diverges.
+        """
+        if "Wc" in self._cache:
+            return self._cache["Wc"]
+
+        # Quick Hurwitz test: eigenvalues must have negative real parts
+        eigA = eigvals(self.A)
+        if np.any(np.real(eigA) >= 0):
+            raise ValueError(
+                "A is not Hurwitz; infinite‑horizon controllability Gramian does not exist. "
+                "Use `controllability_gramian_finite(T)` instead."
+            )
+        Q = self.B @ self.B.T
+        Wc = self._solve_continuous_lyap(Q)
+        self._cache["Wc"] = Wc
+        return Wc
+
+    def observability_gramian(self) -> np.ndarray:
+        """
+        Infinite‑horizon observability Gramian (continuous‑time).
+
+        Equivalent checks as `controllability_gramian`.
+        """
+        if "Wo" in self._cache:
+            return self._cache["Wo"]
+
+        eigA = eigvals(self.A)
+        if np.any(np.real(eigA) >= 0):
+            raise ValueError(
+                "A is not Hurwitz; infinite‑horizon observability Gramian does not exist. "
+                "Use `observability_gramian_finite(T)` instead."
+            )
+        Q = self.C.T @ self.C
+        Wo = self._solve_continuous_lyap(Q)
+        self._cache["Wo"] = Wo
+        return Wo
