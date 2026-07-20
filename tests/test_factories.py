@@ -50,6 +50,17 @@ class TestControllerFactory:
         assert isinstance(ctrl, LQR)
         assert ctrl.K is not None
 
+    def test_create_lqr_full_matrix(self, bk, tmp_path):
+        """ControllerFactory creates an LQR with full Q/R matrices and custom A/B."""
+        from factories.controller_factory import ControllerFactory
+        config = tmp_path / "lqr_full.toml"
+        config.write_text("""type = "LQR"\ndt = 0.1\nstate_cost = [[2.0, 0.5], [0.5, 1.0]]\ncontrol_cost = [[0.1, 0.0], [0.0, 0.2]]\nA_dynamics = [[0.9, 0.1], [0.0, 0.9]]\nB_dynamics = [[0.0, 0.1], [0.1, 0.0]]\n""")
+        factory = ControllerFactory(str(config))
+        ctrl = factory.create(backend=bk)
+        from controllers.lqr import LQR
+        assert isinstance(ctrl, LQR)
+        assert ctrl.K is not None
+
     def test_create_pid(self, bk, tmp_path):
         """ControllerFactory creates a PID controller from a valid config."""
         from factories.controller_factory import ControllerFactory

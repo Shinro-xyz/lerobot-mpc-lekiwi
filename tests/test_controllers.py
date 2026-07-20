@@ -82,6 +82,22 @@ class TestLQR:
         lqr = LQR.from_config(config, backend=bk)
         assert lqr.K is not None
 
+    def test_lqr_from_config_full_matrix(self, bk):
+        """from_config accepts full Q/R matrices and custom A/B dynamics."""
+        config = {
+            "state_cost": [[2.0, 0.5], [0.5, 1.0]],
+            "control_cost": [[0.1, 0.0], [0.0, 0.2]],
+            "A_dynamics": [[0.9, 0.1], [0.0, 0.9]],
+            "B_dynamics": [[0.0, 0.1], [0.1, 0.0]],
+            "dt": 0.1,
+        }
+        from controllers.lqr import LQR
+        lqr = LQR.from_config(config, backend=bk)
+        assert lqr.K is not None
+        assert _to_np(lqr.Q, bk).shape == (2, 2)
+        assert _to_np(lqr.A, bk).shape == (2, 2)
+        assert _to_np(lqr.B, bk).shape == (2, 2)
+
 
 class TestPID:
     """Verify PID controller: steady-state error, anti-windup, and reset."""
@@ -256,6 +272,21 @@ class TestMPC:
             "horizon": 5,
             "state_cost": [1.0, 1.0],
             "control_cost": [1.0, 1.0],
+            "dt": 0.1,
+        }
+        from controllers.mpc_lti import MPC_LTI_Base
+        mpc = MPC_LTI_Base.from_config(config, backend=bk)
+        assert mpc.H is not None
+        assert mpc.F is not None
+
+    def test_mpc_from_config_full_matrix(self, bk):
+        """from_config accepts full Q/R matrices and custom A/B dynamics."""
+        config = {
+            "horizon": 5,
+            "state_cost": [[2.0, 0.5], [0.5, 1.0]],
+            "control_cost": [[0.1, 0.0], [0.0, 0.2]],
+            "A_dynamics": [[0.9, 0.1], [0.0, 0.9]],
+            "B_dynamics": [[0.0, 0.1], [0.1, 0.0]],
             "dt": 0.1,
         }
         from controllers.mpc_lti import MPC_LTI_Base

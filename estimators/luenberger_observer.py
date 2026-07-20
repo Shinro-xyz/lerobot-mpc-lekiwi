@@ -1,7 +1,7 @@
 from typing import Optional, Any
 from components import StateEstimator
 from factories.registry import register_estimator
-from utils.array_backend import ArrayBackend, NumpyBackend
+from utils.array_backend import ArrayBackend, NumpyBackend, parse_matrix
 
 
 @register_estimator("LuenbergerObserver")
@@ -88,8 +88,12 @@ class LuenbergerObserver(StateEstimator):
         """Create a Luenberger observer from a TOML config dict.
 
         Config fields:
-            observer_gain: List of diagonal gain weights (n_x,).
-            dt: Time step — used to set B = dt * I.
+            observer_gain: Diagonal gain weights (n_x,) or full gain matrix (n_x, n_y).
+            dt: Time step — used to set B = dt * I unless B_dynamics is given.
+            A_dynamics: Optional full A matrix (n_x, n_x). Defaults to I.
+            B_dynamics: Optional full B matrix (n_x, n_u). Defaults to dt * I.
+            C: Optional full C matrix (n_y, n_x). Defaults to I.
+            D: Optional full D matrix (n_y, n_u). Defaults to zeros.
 
         Args:
             config: TOML config dict.
@@ -99,14 +103,14 @@ class LuenbergerObserver(StateEstimator):
             LuenbergerObserver instance.
         """
         bk = backend or NumpyBackend()
-        gain = bk.diag(config["observer_gain"])
+        gain = parse_matrix(bk, config["observer_gain"])
         n = gain.shape[0]
         return cls(
-            A=bk.eye(n),
-            B=config["dt"] * bk.eye(n),
+            A=bk.array(config.get("A_dynamics", bk.eye(n))),
+            B=bk.array(config.get("B_dynamics", config["dt"] * bk.eye(n))),
             observer_gain=gain,
-            C=bk.eye(n),
-            D=bk.zeros((n, n)),
+            C=bk.array(config["C"]) if "C" in config else bk.eye(n),
+            D=bk.array(config["D"]) if "D" in config else bk.zeros((n, n)),
             x0=bk.zeros((n, 1)),
             backend=bk,
         )

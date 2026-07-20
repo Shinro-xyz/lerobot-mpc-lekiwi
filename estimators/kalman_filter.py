@@ -1,7 +1,7 @@
 from typing import Optional, Any
 from components import StateEstimator
 from factories.registry import register_estimator
-from utils.array_backend import ArrayBackend, NumpyBackend
+from utils.array_backend import ArrayBackend, NumpyBackend, parse_matrix
 
 
 @register_estimator("KalmanFilter")
@@ -103,9 +103,13 @@ class KalmanFilter(StateEstimator):
         """Create a Kalman filter from a TOML config dict.
 
         Config fields:
-            process_noise: List of diagonal Q weights (n_x,).
-            measurement_noise: List of diagonal R weights (n_y,).
-            dt: Time step — used to set B = dt * I.
+            process_noise: Diagonal Q weights (n_x,) or full Q matrix (n_x, n_x).
+            measurement_noise: Diagonal R weights (n_y,) or full R matrix (n_y, n_y).
+            dt: Time step — used to set B = dt * I unless B_dynamics is given.
+            A_dynamics: Optional full A matrix (n_x, n_x). Defaults to I.
+            B_dynamics: Optional full B matrix (n_x, n_u). Defaults to dt * I.
+            C: Optional full C matrix (n_y, n_x). Defaults to I.
+            D: Optional full D matrix (n_y, n_u). Defaults to zeros.
 
         Args:
             config: TOML config dict.
@@ -115,14 +119,17 @@ class KalmanFilter(StateEstimator):
             KalmanFilter instance.
         """
         bk = backend or NumpyBackend()
-        n = len(config["process_noise"])
+        Q = parse_matrix(bk, config["process_noise"])
+        n = Q.shape[0]
+        R = parse_matrix(bk, config["measurement_noise"])
+        n_y = R.shape[0]
         return cls(
-            A=bk.eye(n),
-            B=config["dt"] * bk.eye(n),
-            Q=bk.diag(config["process_noise"]),
-            R=bk.diag(config["measurement_noise"]),
-            C=bk.eye(n),
-            D=bk.zeros((n, n)),
+            A=bk.array(config.get("A_dynamics", bk.eye(n))),
+            B=bk.array(config.get("B_dynamics", config["dt"] * bk.eye(n))),
+            Q=Q,
+            R=R,
+            C=bk.array(config["C"]) if "C" in config else bk.eye(n),
+            D=bk.array(config["D"]) if "D" in config else bk.zeros((n_y, n)),
             x0=bk.zeros((n, 1)),
             backend=bk,
         )

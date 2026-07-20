@@ -2,7 +2,7 @@ from typing import Optional, Any
 from components import Controller
 from scipy.linalg import solve_discrete_are
 from factories.registry import register_controller
-from utils.array_backend import ArrayBackend, NumpyBackend
+from utils.array_backend import ArrayBackend, NumpyBackend, parse_matrix
 
 
 @register_controller("LQR")
@@ -87,9 +87,11 @@ class LQR(Controller):
         """Create an LQR controller from a TOML config dict.
 
         Config fields:
-            state_cost: List of diagonal Q weights (n_x,).
-            control_cost: List of diagonal R weights (n_u,).
-            dt: Time step — used to set B = dt * I.
+            state_cost: Diagonal Q weights (n_x,) or full Q matrix (n_x, n_x).
+            control_cost: Diagonal R weights (n_u,) or full R matrix (n_u, n_u).
+            dt: Time step — used to set B = dt * I unless B_dynamics is given.
+            A_dynamics: Optional full A matrix (n_x, n_x). Defaults to I.
+            B_dynamics: Optional full B matrix (n_x, n_u). Defaults to dt * I.
 
         Args:
             config: TOML config dict.
@@ -99,11 +101,12 @@ class LQR(Controller):
             LQR instance.
         """
         bk = backend or NumpyBackend()
-        n = len(config["state_cost"])
+        Q = parse_matrix(bk, config["state_cost"])
+        n = Q.shape[0]
         return cls(
-            state_cost_matrix=bk.diag(config["state_cost"]),
-            control_cost_matrix=bk.diag(config["control_cost"]),
-            dynamics_state_matrix=bk.eye(n),
-            dynamics_control_matrix=config["dt"] * bk.eye(n),
+            state_cost_matrix=Q,
+            control_cost_matrix=parse_matrix(bk, config["control_cost"]),
+            dynamics_state_matrix=bk.array(config.get("A_dynamics", bk.eye(n))),
+            dynamics_control_matrix=bk.array(config.get("B_dynamics", config["dt"] * bk.eye(n))),
             backend=bk,
         )

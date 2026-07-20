@@ -3,7 +3,7 @@ import osqp
 from scipy import sparse
 from components import Controller
 from factories.registry import register_controller
-from utils.array_backend import ArrayBackend, NumpyBackend
+from utils.array_backend import ArrayBackend, NumpyBackend, parse_matrix
 
 
 class MPC_LTI(Controller):
@@ -200,11 +200,13 @@ class MPC_LTI_DeltaU(MPC_LTI):
         """Create an MPC_DeltaU controller from a TOML config dict.
 
         Config fields:
-            delta_u_penalty: List of diagonal S weights (n_u,).
+            delta_u_penalty: Diagonal S weights (n_u,) or full S matrix (n_u, n_u).
             horizon: Prediction horizon.
-            state_cost: List of diagonal Q weights (n_x,).
-            control_cost: List of diagonal R weights (n_u,).
+            state_cost: Diagonal Q weights (n_x,) or full Q matrix (n_x, n_x).
+            control_cost: Diagonal R weights (n_u,) or full R matrix (n_u, n_u).
             dt: Time step.
+            A_dynamics: Optional full A matrix (n_x, n_x). Defaults to I.
+            B_dynamics: Optional full B matrix (n_x, n_u). Defaults to dt * I.
             constraints: Optional dict with ``upper`` and ``lower`` bound lists.
 
         Args:
@@ -215,15 +217,16 @@ class MPC_LTI_DeltaU(MPC_LTI):
             MPC_LTI_DeltaU instance.
         """
         bk = backend or NumpyBackend()
-        n = len(config["state_cost"])
+        Q = parse_matrix(bk, config["state_cost"])
+        n = Q.shape[0]
         ctrl = cls(
-            delta_u_penalty=bk.diag(config["delta_u_penalty"]),
+            delta_u_penalty=parse_matrix(bk, config["delta_u_penalty"]),
             horizon=config["horizon"],
-            control_cost_matrix=bk.diag(config["control_cost"]),
-            state_cost_matrix=bk.diag(config["state_cost"]),
-            A_dynamics=bk.eye(n),
-            B_dynamics=config["dt"] * bk.eye(n),
-            terminal_cost=bk.diag(config["state_cost"]),
+            control_cost_matrix=parse_matrix(bk, config["control_cost"]),
+            state_cost_matrix=Q,
+            A_dynamics=bk.array(config.get("A_dynamics", bk.eye(n))),
+            B_dynamics=bk.array(config.get("B_dynamics", config["dt"] * bk.eye(n))),
+            terminal_cost=parse_matrix(bk, config.get("terminal_cost", config["state_cost"])),
             backend=bk,
         )
         if "constraints" in config:
@@ -299,9 +302,11 @@ class MPC_LTI_Base(MPC_LTI):
 
         Config fields:
             horizon: Prediction horizon.
-            state_cost: List of diagonal Q weights (n_x,).
-            control_cost: List of diagonal R weights (n_u,).
+            state_cost: Diagonal Q weights (n_x,) or full Q matrix (n_x, n_x).
+            control_cost: Diagonal R weights (n_u,) or full R matrix (n_u, n_u).
             dt: Time step.
+            A_dynamics: Optional full A matrix (n_x, n_x). Defaults to I.
+            B_dynamics: Optional full B matrix (n_x, n_u). Defaults to dt * I.
             constraints: Optional dict with ``upper`` and ``lower`` bound lists.
 
         Args:
@@ -312,14 +317,15 @@ class MPC_LTI_Base(MPC_LTI):
             MPC_LTI instance.
         """
         bk = backend or NumpyBackend()
-        n = len(config["state_cost"])
+        Q = parse_matrix(bk, config["state_cost"])
+        n = Q.shape[0]
         ctrl = cls(
             horizon=config["horizon"],
-            control_cost_matrix=bk.diag(config["control_cost"]),
-            state_cost_matrix=bk.diag(config["state_cost"]),
-            A_dynamics=bk.eye(n),
-            B_dynamics=config["dt"] * bk.eye(n),
-            terminal_cost=bk.diag(config["state_cost"]),
+            control_cost_matrix=parse_matrix(bk, config["control_cost"]),
+            state_cost_matrix=Q,
+            A_dynamics=bk.array(config.get("A_dynamics", bk.eye(n))),
+            B_dynamics=bk.array(config.get("B_dynamics", config["dt"] * bk.eye(n))),
+            terminal_cost=parse_matrix(bk, config.get("terminal_cost", config["state_cost"])),
             backend=bk,
         )
         if "constraints" in config:

@@ -3,6 +3,24 @@ from typing import Any
 import numpy as np
 
 
+def parse_matrix(bk, value):
+    """Convert a TOML config value to a matrix.
+
+    Flat list (e.g. ``[1.0, 2.0, 3.0]``) → diagonal matrix.
+    Nested list (e.g. ``[[1, 0], [0, 2]]``) → full matrix.
+
+    Args:
+        bk: ArrayBackend instance.
+        value: List or list-of-lists from a TOML config.
+
+    Returns:
+        Array in the backend's native type.
+    """
+    if isinstance(value, list) and len(value) > 0 and isinstance(value[0], list):
+        return bk.array(value)
+    return bk.diag(value)
+
+
 class ArrayBackend(ABC):
     """Abstract interface for array operations used by all components.
 
