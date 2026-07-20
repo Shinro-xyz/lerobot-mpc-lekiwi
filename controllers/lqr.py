@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Any
 from components import Controller
 from scipy.linalg import solve_discrete_are
 from factories.registry import register_controller
@@ -64,7 +64,7 @@ class LQR(Controller):
         P = self.bk.from_numpy(P_np)
         self.K = self.bk.inv(self.R + self.B.T @ P @ self.B) @ (self.B.T @ P @ self.A)
 
-    def compute(self, current_state, target_state: Optional = None):
+    def compute(self, current_state, target_state: Optional[Any] = None):
         """Compute the optimal control input :math:`u = -K (x - x_t)`.
 
         Args:

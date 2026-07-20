@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Any
 from components import StateEstimator
 from factories.registry import register_estimator
 from utils.array_backend import ArrayBackend, NumpyBackend
@@ -39,9 +39,9 @@ class LuenbergerObserver(StateEstimator):
         A,
         B,
         observer_gain,
-        C: Optional = None,
-        D: Optional = None,
-        x0: Optional = None,
+        C: Optional[Any] = None,
+        D: Optional[Any] = None,
+        x0: Optional[Any] = None,
         backend: Optional[ArrayBackend] = None,
     ):
         self.bk = backend or NumpyBackend()
@@ -75,7 +75,7 @@ class LuenbergerObserver(StateEstimator):
         self.x_hat = x_pred + self.L @ innovations
         return self.x_hat
 
-    def reset(self, x0: Optional = None):
+    def reset(self, x0: Optional[Any] = None):
         """Reset the observer to its initial state.
 
         Args:

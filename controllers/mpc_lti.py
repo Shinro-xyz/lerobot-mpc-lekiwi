@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Any
 import osqp
 from scipy import sparse
 from components import Controller
@@ -267,7 +267,7 @@ class MPC_LTI_DeltaU(MPC_LTI):
         self._augment_dynamics()
         super()._mpc_dynamics_matrices()
 
-    def compute(self, x0, u_prev: Optional = None):
+    def compute(self, x0, u_prev: Optional[Any] = None):
         """Solve MPC with :math:`\\Delta u` regularization.
 
         Augments the state with the previous control input before solving.
