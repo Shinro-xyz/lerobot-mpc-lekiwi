@@ -148,7 +148,8 @@ class MPC_LTI(Controller):
             Optimal first control action (n_u,).
         """
         x0_np = self.bk.to_numpy(x0)
-        q = self.F.T @ x0_np
+        F_np = self.bk.to_numpy(self.F)
+        q = F_np.T @ x0_np
         prob = osqp.OSQP()
         prob.setup(
             sparse.csc_matrix(self.bk.to_numpy(self.H)), q.flatten(),

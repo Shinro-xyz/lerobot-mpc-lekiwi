@@ -61,20 +61,10 @@ class ArmRobot(Plant):
         self._joint_names = joint_names if joint_names is not None else [f"joint_{i}" for i in range(num_dof)]
 
     def _get_ee_pos(self):
-        """Get the end-effector position from the physics engine.
-
-        Returns:
-            Position vector (3,) from the engine.
-        """
-        return self._engine.get_body_xpos(self._ee_body_name)
+        return self.bk.array(self._engine.get_body_xpos(self._ee_body_name))
 
     def _get_ee_jacobian(self):
-        """Get the end-effector Jacobian from the physics engine.
-
-        Returns:
-            Jacobian matrix of shape (6, num_dof) from the engine.
-        """
-        return self._engine.compute_jacobian_for_joints(self._ee_body_name, self._joint_names)
+        return self.bk.array(self._engine.compute_jacobian_for_joints(self._ee_body_name, self._joint_names))
 
     def physics_engine(self, engine: Optional[PhysicsEngine]):
         """Attach a physics engine.

@@ -167,6 +167,10 @@ class ArrayBackend(ABC):
         ...
 
     @abstractmethod
+    def allclose(self, a, b) -> Any:
+        ...
+
+    @abstractmethod
     def from_numpy(self, x) -> Any:
         ...
 
@@ -299,6 +303,9 @@ class NumpyBackend(ArrayBackend):
     def from_numpy(self, x):
         return x
 
+    def allclose(self, a, b):
+        return np.allclose(a, b, atol=1e-8)
+
 
 class TorchBackend(ArrayBackend):
     """ArrayBackend implementation using PyTorch.
@@ -318,6 +325,8 @@ class TorchBackend(ArrayBackend):
         self.device = device
 
     def array(self, data):
+        if isinstance(data, list) and len(data) > 0 and isinstance(data[0], self.torch.Tensor):
+            return self.torch.stack(data)
         return self.torch.tensor(data, device=self.device, dtype=self.torch.float64)
 
     def zeros(self, *shape):
@@ -332,6 +341,8 @@ class TorchBackend(ArrayBackend):
         return self.torch.eye(n, device=self.device, dtype=self.torch.float64)
 
     def diag(self, x):
+        if isinstance(x, list):
+            x = self.torch.tensor(x, dtype=self.torch.float64)
         return self.torch.diag(x)
 
     def inv(self, x):
@@ -341,6 +352,8 @@ class TorchBackend(ArrayBackend):
         return self.torch.linalg.pinv(x)
 
     def solve(self, A, b):
+        if isinstance(b, list):
+            b = self.torch.stack(b)
         return self.torch.linalg.solve(A, b)
 
     def norm(self, x):
@@ -362,6 +375,8 @@ class TorchBackend(ArrayBackend):
         return self.torch.trace(x)
 
     def clip(self, x, lo, hi):
+        if not isinstance(x, self.torch.Tensor):
+            x = self.torch.tensor(x, dtype=self.torch.float64)
         return self.torch.clamp(x, lo, hi)
 
     def where(self, cond, a, b):
@@ -430,10 +445,17 @@ class TorchBackend(ArrayBackend):
         return self.torch.block(blocks)
 
     def tile(self, x, reps):
+        if isinstance(reps, int):
+            reps = (reps,)
         return self.torch.tile(x, reps)
 
     def to_numpy(self, x):
         return x.cpu().numpy()
 
     def from_numpy(self, x):
+        if isinstance(x, list):
+            x = np.array(x, dtype=np.float64)
         return self.torch.from_numpy(x).to(self.device)
+
+    def allclose(self, a, b):
+        return bool(self.torch.allclose(a, b, atol=1e-8))

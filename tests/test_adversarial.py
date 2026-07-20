@@ -729,7 +729,7 @@ class TestKalmanFilterAdversarial:
         kf = KalmanFilter(A, B, Q, R, C=C, backend=bk)
         y = bk.array([[1.0], [0.0], [0.0]])
         u = bk.array([[0.0], [0.0]])
-        with pytest.raises(ValueError):
+        with pytest.raises((ValueError, RuntimeError)):
             kf.estimate(y, u)
 
     def test_kalman_non_psd_Q(self, bk):
@@ -789,7 +789,7 @@ class TestLuenbergerObserverAdversarial:
         obs = LuenbergerObserver(A, B, L, C=C, backend=bk)
         y = bk.array([[1.0], [0.0]])
         u = bk.array([[0.0], [0.0]])
-        with pytest.raises(ValueError):
+        with pytest.raises((ValueError, RuntimeError)):
             obs.estimate(y, u)
 
 

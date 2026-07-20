@@ -270,13 +270,13 @@ class TestTorchBackend:
         """Create an identity torch tensor."""
         I = self.bk.eye(3)
         assert I.shape == (3, 3)
-        assert self.bk.to_numpy(self.bk.allclose(I, self.torch.eye(3)))
+        assert self.bk.allclose(I, self.torch.eye(3, dtype=self.torch.float64))
 
     def test_inv(self):
         """Compute the matrix inverse: A @ A^{-1} = I."""
         A = self.bk.array([[4, 7], [2, 6]])
         Ainv = self.bk.inv(A)
-        assert self.bk.to_numpy(self.bk.allclose(A @ Ainv, self.torch.eye(2)))
+        assert self.bk.allclose(A @ Ainv, self.torch.eye(2, dtype=self.torch.float64))
 
     def test_svd(self):
         """Compute the SVD of a 3x2 matrix."""
@@ -290,7 +290,7 @@ class TestTorchBackend:
         """Compute the Cholesky decomposition: L @ L^T = A."""
         A = self.bk.array([[4, 2], [2, 3]])
         L = self.bk.cholesky(A)
-        assert self.bk.to_numpy(self.bk.allclose(L @ L.T, A))
+        assert self.bk.allclose(L @ L.T, A)
 
     def test_to_numpy_roundtrip(self):
         """Verify to_numpy and from_numpy are inverses."""
