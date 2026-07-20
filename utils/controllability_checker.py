@@ -19,11 +19,24 @@ def controllabilty(A:np.ndarray, B:np.ndarray):
     rank=np.linalg.matrix_rank(C)
     is_controllable=(rank==n)
 
-    # checking for singular values
-    U,s,t= np.linalg.svd(C)
-
+    # finding the controllability Gramian
+    
+    
     return C, is_controllable, rank
 
 def observability(A:np.ndarray, C: np.ndarray):
     A=np.ndarray(A) #state matrix, dim: nxn
     C=np.ndarray(C) #output matrix, dim: nxm
+
+    n= A.shape[0]
+    cols=[C]
+
+    for i in range(1,n):
+        cols.append(C@np.linalg.matrix_power(A,i))
+
+    O=np.vstack(cols) #stacking the list vertically
+
+    rank= np.linalg.matrix_rank(O)
+    is_observable=(rank==n)
+
+    return O, is_observable, rank 
