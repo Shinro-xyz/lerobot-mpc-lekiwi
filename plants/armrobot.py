@@ -61,10 +61,14 @@ class ArmRobot(Plant):
         self._joint_names = joint_names if joint_names is not None else [f"joint_{i}" for i in range(num_dof)]
 
     def _get_ee_pos(self):
+        assert self._engine is not None
+        assert self._ee_body_name is not None
         pos = self._engine.get_body_xpos(self._ee_body_name)
         return self.bk.array(pos)
 
     def _get_ee_jacobian(self):
+        assert self._engine is not None
+        assert self._ee_body_name is not None
         return self.bk.array(self._engine.compute_jacobian_for_joints(self._ee_body_name, self._joint_names))
 
     def physics_engine(self, engine: Optional[PhysicsEngine]):
@@ -84,6 +88,7 @@ class ArmRobot(Plant):
             self.bk = engine.backend
             if self._ee_body_name is None:
                 self._ee_body_name = self._find_ee_body_name(engine)
+            assert self._engine is not None
             self._engine.forward()
             ee = self._get_ee_pos()
             self.state = self.bk.hstack([ee, self.bk.zeros(3)])

@@ -289,7 +289,7 @@ class LTISystemsAnalyzer:
             RuntimeError: If IVP integration fails.
         """
         n = self.A.shape[0]
-        A_mat = self.A.toarray() if issparse(self.A) else self.A
+        A_mat = self.A.toarray() if issparse(self.A) else self.A  # type: ignore
         sol = solve_ivp(
             fun=self._gramian_ode,
             t_span=(0.0, T),

@@ -442,7 +442,8 @@ class TorchBackend(ArrayBackend):
         return self.torch.hstack(arrays)
 
     def block(self, blocks):
-        return self.torch.block(blocks)
+        rows = [self.torch.cat(row, dim=1) for row in blocks]
+        return self.torch.cat(rows, dim=0)
 
     def tile(self, x, reps):
         if isinstance(reps, int):

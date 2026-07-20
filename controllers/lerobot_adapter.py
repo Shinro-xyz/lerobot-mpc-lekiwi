@@ -113,7 +113,7 @@ class LeRobotDiffusionAdapter(Controller):
         use_camera = config.get("use_camera", False)
         device = config.get("device", "cpu")
 
-        from lerobot.policies import make_policy
+        from lerobot.policies import make_policy  # type: ignore
         policy = make_policy(policy_type, pretrained_path=checkpoint)
         policy.to(device)
         policy.eval()
