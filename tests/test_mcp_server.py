@@ -13,6 +13,11 @@ from shinro_mcp_server import (
     controller_reset,
     list_controller_types,
     list_controllers,
+    create_estimator,
+    estimator_estimate,
+    estimator_reset,
+    list_estimator_types,
+    list_estimators,
     _store,
 )
 
@@ -537,3 +542,173 @@ print(result)
             controller_compute(name="mpc_con", state=[10.0, 10.0], u_prev=[0.0, 0.0])
         )
         assert all(abs(v) <= 0.5 + 1e-4 for v in data["action"])
+
+
+class TestCreateEstimator:
+    """Verify estimator creation via inline params and config files."""
+
+    def test_create_kalman_inline_creates_and_stores_instance(self):
+        """KalmanFilter created with inline params is stored."""
+        result = create_estimator(
+            name="kf1", type="KalmanFilter",
+            params={"dt": 0.02, "process_noise": [0.01, 0.01], "measurement_noise": [0.1, 0.1]},
+        )
+        assert "Created KalmanFilter estimator 'kf1'" in result
+        assert "kf1" in _store
+
+    def test_create_luenberger_inline_creates_and_stores_instance(self):
+        """LuenbergerObserver created with inline params is stored."""
+        result = create_estimator(
+            name="lo1", type="LuenbergerObserver",
+            params={"dt": 0.02, "observer_gain": [0.8, 0.8]},
+        )
+        assert "Created LuenbergerObserver estimator 'lo1'" in result
+        assert "lo1" in _store
+
+    def test_create_estimator_from_config_creates_and_stores_instance(self):
+        """Estimator created from a TOML config file is stored."""
+        result = create_estimator(
+            name="est1", config_path="configs/estimators/luenberger_base.toml"
+        )
+        assert "Created config-based estimator 'est1'" in result
+        assert "est1" in _store
+
+    def test_create_estimator_unknown_type_returns_error(self):
+        """An unregistered estimator type returns an error message."""
+        result = create_estimator(name="bad", type="NonExistent", params={})
+        assert "Unknown estimator type" in result
+        assert "bad" not in _store
+
+    def test_create_estimator_no_params_returns_usage_instruction(self):
+        """Calling create_estimator without config_path or type+params returns guidance."""
+        result = create_estimator(name="bad")
+        assert "Provide either" in result
+        assert "bad" not in _store
+
+    def test_create_estimator_config_path_nonexistent_raises_filenotfound(self):
+        """A nonexistent config file path raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            create_estimator(name="bad", config_path="nonexistent.toml")
+
+
+class TestEstimatorEstimate:
+    """Verify state estimation for both estimator types."""
+
+    def test_estimate_kalman_returns_state_estimate(self):
+        """KalmanFilter estimate returns a state_estimate vector."""
+        create_estimator(
+            name="kf", type="KalmanFilter",
+            params={"dt": 0.02, "process_noise": [0.01, 0.01], "measurement_noise": [0.1, 0.1]},
+        )
+        data = json.loads(estimator_estimate(name="kf", measurement=[0.0, 0.0], control_input=[0.0, 0.0]))
+        assert "state_estimate" in data
+        assert len(data["state_estimate"]) == 2
+
+    def test_estimate_luenberger_returns_state_estimate(self):
+        """LuenbergerObserver estimate returns a state_estimate vector."""
+        create_estimator(
+            name="lo", type="LuenbergerObserver",
+            params={"dt": 0.02, "observer_gain": [0.8, 0.8]},
+        )
+        data = json.loads(estimator_estimate(name="lo", measurement=[0.0, 0.0], control_input=[0.0, 0.0]))
+        assert "state_estimate" in data
+        assert len(data["state_estimate"]) == 2
+
+    def test_estimate_kalman_converges_with_noiseless_measurements(self):
+        """KalmanFilter estimate converges toward true state with noiseless measurements."""
+        create_estimator(
+            name="kf", type="KalmanFilter",
+            params={"dt": 0.02, "process_noise": [0.01, 0.01], "measurement_noise": [0.001, 0.001]},
+        )
+        for _ in range(20):
+            data = json.loads(estimator_estimate(name="kf", measurement=[1.0, 2.0], control_input=[0.0, 0.0]))
+        assert abs(data["state_estimate"][0] - 1.0) < 0.1
+        assert abs(data["state_estimate"][1] - 2.0) < 0.1
+
+    def test_estimate_luenberger_converges_with_noiseless_measurements(self):
+        """LuenbergerObserver estimate converges toward true state with noiseless measurements."""
+        create_estimator(
+            name="lo", type="LuenbergerObserver",
+            params={"dt": 0.02, "observer_gain": [0.8, 0.8]},
+        )
+        for _ in range(20):
+            data = json.loads(estimator_estimate(name="lo", measurement=[1.0, 2.0], control_input=[0.0, 0.0]))
+        assert abs(data["state_estimate"][0] - 1.0) < 0.1
+        assert abs(data["state_estimate"][1] - 2.0) < 0.1
+
+    def test_estimate_unknown_name_returns_error(self):
+        """Estimating with a name that was never created returns an error."""
+        result = estimator_estimate(name="nonexistent", measurement=[0.0], control_input=[0.0])
+        assert "No estimator named" in result
+
+    def test_estimate_wrong_measurement_dim_returns_error(self):
+        """Estimating with wrong measurement dimension returns an error."""
+        create_estimator(
+            name="kf", type="KalmanFilter",
+            params={"dt": 0.02, "process_noise": [0.01, 0.01], "measurement_noise": [0.1, 0.1]},
+        )
+        result = estimator_estimate(name="kf", measurement=[0.0, 0.0, 0.0], control_input=[0.0, 0.0])
+        assert "Error" in result
+
+
+class TestEstimatorReset:
+    """Verify reset clears internal state for stateful estimators."""
+
+    def test_reset_kalman_clears_state(self):
+        """KalmanFilter reset clears the state estimate."""
+        create_estimator(
+            name="kf", type="KalmanFilter",
+            params={"dt": 0.02, "process_noise": [0.01, 0.01], "measurement_noise": [0.1, 0.1]},
+        )
+        estimator_estimate(name="kf", measurement=[1.0, 2.0], control_input=[0.0])
+        result = estimator_reset(name="kf")
+        assert "reset" in result.lower()
+        est = _store["kf"]
+        assert np.allclose(est.x_hat, 0.0)
+
+    def test_reset_luenberger_clears_state(self):
+        """LuenbergerObserver reset clears the state estimate."""
+        create_estimator(
+            name="lo", type="LuenbergerObserver",
+            params={"dt": 0.02, "observer_gain": [0.8, 0.8]},
+        )
+        estimator_estimate(name="lo", measurement=[1.0, 2.0], control_input=[0.0])
+        result = estimator_reset(name="lo")
+        assert "reset" in result.lower()
+        est = _store["lo"]
+        assert np.allclose(est.x_hat, 0.0)
+
+    def test_reset_unknown_name_returns_error(self):
+        """Resetting a nonexistent estimator returns an error."""
+        result = estimator_reset(name="nonexistent")
+        assert "No estimator named" in result
+
+
+class TestEstimatorListTools:
+    """Verify estimator listing tools return correct metadata."""
+
+    def test_list_estimator_types_includes_all_registered_types(self):
+        """list_estimator_types returns all registered estimator types."""
+        data = json.loads(list_estimator_types())
+        assert "estimator_types" in data
+        assert "KalmanFilter" in data["estimator_types"]
+        assert "LuenbergerObserver" in data["estimator_types"]
+
+    def test_list_estimators_returns_empty_dict_when_none_created(self):
+        """list_estimators returns an empty dict when no estimators exist."""
+        data = json.loads(list_estimators())
+        assert data["estimators"] == {}
+
+    def test_list_estimators_returns_all_created_instances(self):
+        """list_estimators returns name-to-type mapping for all stored instances."""
+        create_estimator(
+            name="a", type="KalmanFilter",
+            params={"dt": 0.02, "process_noise": [0.01], "measurement_noise": [0.1]},
+        )
+        create_estimator(
+            name="b", type="LuenbergerObserver",
+            params={"dt": 0.02, "observer_gain": [0.8]},
+        )
+        data = json.loads(list_estimators())
+        assert data["estimators"]["a"] == "KalmanFilter"
+        assert data["estimators"]["b"] == "LuenbergerObserver"
