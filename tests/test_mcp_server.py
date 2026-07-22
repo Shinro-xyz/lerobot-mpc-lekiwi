@@ -23,8 +23,16 @@ from shinro_mcp_server import (
     trajectory_position_at,
     list_trajectory_types,
     list_trajectories,
-    analyze_system,
+    analyze_controllability,
+    analyze_observability,
+    gramian_continuous,
+    gramian_discrete,
+    gramian_finite,
+    system_summary,
     balanced_truncation,
+    set_mpc_constraints,
+    get_mpc_constraints,
+    set_pid_output_limits,
     _store,
 )
 
@@ -912,97 +920,156 @@ class TestTrajectoryListTools:
 
 
 class TestSystemAnalysis:
-    """Verify system analysis tools: controllability, observability, Gramians, LQR."""
+    """Verify system analysis tools: controllability, observability, Gramians, balanced truncation."""
 
-    def test_analyze_double_integrator_is_controllable_and_observable(self):
-        """Double integrator is both controllable and observable."""
-        A = [[0, 1], [0, 0]]
-        B = [[0], [1]]
-        C = [[1, 0]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
+    # ── Controllability ──
+
+    def test_controllability_double_integrator_is_controllable(self):
+        """Double integrator is controllable (B has access to one state)."""
+        data = json.loads(analyze_controllability(A=[[0, 1], [0, 0]], B=[[0], [1]]))
         assert data["controllable"] is True
-        assert data["observable"] is True
-        assert data["n"] == 2
+        assert data["rank"] == 2
 
-    def test_analyze_uncontrollable_system(self):
-        """A system with B=0 is not controllable."""
-        A = [[0, 1], [0, 0]]
-        B = [[0], [0]]
-        C = [[1, 0]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
+    def test_controllability_zero_B_is_uncontrollable(self):
+        """System with B=0 is not controllable."""
+        data = json.loads(analyze_controllability(A=[[0, 1], [0, 0]], B=[[0], [0]]))
         assert data["controllable"] is False
+        assert data["rank"] == 0
 
-    def test_analyze_unobservable_system(self):
-        """A system with C=0 is not observable."""
-        A = [[0, 1], [0, 0]]
-        B = [[0], [1]]
-        C = [[0, 0]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
+    def test_controllability_single_input_2d(self):
+        """2D system with single input has rank 2 controllability matrix."""
+        data = json.loads(analyze_controllability(A=[[1, 1], [0, 1]], B=[[0], [1]]))
+        assert data["controllable"] is True
+
+    def test_controllability_invalid_A_returns_error(self):
+        """Non-square A matrix returns an error."""
+        data = json.loads(analyze_controllability(A=[[1, 0, 0], [0, 1, 0]], B=[[0], [1]]))
+        assert "error" in data
+
+    def test_controllability_returns_condition_number(self):
+        """Controllable system returns a finite condition number."""
+        data = json.loads(analyze_controllability(A=[[0, 1], [0, 0]], B=[[0], [1]]))
+        assert data["condition"] is not None
+        assert data["condition"] > 0
+
+    # ── Observability ──
+
+    def test_observability_double_integrator_is_observable(self):
+        """Double integrator with position output is observable."""
+        data = json.loads(analyze_observability(A=[[0, 1], [0, 0]], C=[[1, 0]]))
+        assert data["observable"] is True
+        assert data["rank"] == 2
+
+    def test_observability_zero_C_is_unobservable(self):
+        """System with C=0 is not observable."""
+        data = json.loads(analyze_observability(A=[[0, 1], [0, 0]], C=[[0, 0]]))
         assert data["observable"] is False
 
-    def test_analyze_returns_rank_report(self):
-        """analyze_system returns rank and condition for controllability/observability."""
-        A = [[0, 1], [0, 0]]
-        B = [[0], [1]]
-        C = [[1, 0]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
-        assert "rank_report" in data
-        assert "controllability" in data["rank_report"]
-        assert "observability" in data["rank_report"]
-        assert data["rank_report"]["controllability"]["rank"] == 2
-        assert data["rank_report"]["observability"]["rank"] == 2
+    def test_observability_velocity_only_is_not_observable(self):
+        """Double integrator with only velocity output (C=[[0,1]]) is not observable (position unobservable)."""
+        data = json.loads(analyze_observability(A=[[0, 1], [0, 0]], C=[[0, 1]]))
+        assert data["observable"] is False
 
-    def test_analyze_stable_system_returns_gramian_eigs(self):
-        """Stable system returns controllability and observability Gramian eigenvalues."""
-        A = [[-1, 0], [0, -2]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
+    def test_observability_invalid_A_returns_error(self):
+        """Non-square A matrix returns an error."""
+        data = json.loads(analyze_observability(A=[[1, 0, 0], [0, 1, 0]], C=[[1, 0]]))
+        assert "error" in data
+
+    # ── Continuous Gramians ──
+
+    def test_gramian_continuous_stable_system_returns_gramians(self):
+        """Stable system returns controllability and observability Gramians."""
+        data = json.loads(gramian_continuous(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]]))
+        assert data["controllability_gramian"] is not None
+        assert data["observability_gramian"] is not None
+        assert len(data["controllability_gramian"]) == 2
+
+    def test_gramian_continuous_returns_eigenvalues(self):
+        """Continuous Gramian eigenvalues are returned sorted descending."""
+        data = json.loads(gramian_continuous(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]]))
         assert data["controllability_gramian_eigs"] is not None
-        assert data["observability_gramian_eigs"] is not None
         assert len(data["controllability_gramian_eigs"]) == 2
+        assert data["controllability_gramian_eigs"][0] >= data["controllability_gramian_eigs"][1]
 
-    def test_analyze_stable_system_returns_hankel_singular_values(self):
+    def test_gramian_continuous_returns_hankel_singular_values(self):
         """Stable system returns Hankel singular values."""
-        A = [[-1, 0], [0, -2]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
+        data = json.loads(gramian_continuous(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]]))
         assert data["hankel_singular_values"] is not None
         assert len(data["hankel_singular_values"]) == 2
-        assert data["hankel_singular_values"][0] >= data["hankel_singular_values"][1]
 
-    def test_analyze_unstable_system_gramian_is_none(self):
-        """Unstable system returns None for infinite-horizon Gramians."""
-        A = [[1, 0], [0, 1]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(analyze_system(A=A, B=B, C=C))
-        assert data["controllability_gramian_eigs"] is None
-        assert data["observability_gramian_eigs"] is None
+    def test_gramian_continuous_unstable_returns_none_with_error(self):
+        """Unstable system returns None for Gramians with an error message."""
+        data = json.loads(gramian_continuous(A=[[1, 0], [0, 1]], B=[[1], [1]], C=[[1, 1]]))
+        assert data["controllability_gramian"] is None
+        assert "controllability_gramian_error" in data
 
-    def test_analyze_with_dt_returns_discrete_gramians(self):
-        """Discrete-time system analysis works with dt parameter."""
-        A = [[0.9, 0], [0, 0.8]]
-        B = [[0.1], [0.2]]
-        C = [[1, 0], [0, 1]]
-        data = json.loads(analyze_system(A=A, B=B, C=C, dt=0.1))
-        assert data["controllable"] is True
-        assert data["observable"] is True
+    def test_gramian_continuous_no_B_returns_zeros(self):
+        """System with no B matrix has zero controllability Gramian."""
+        data = json.loads(gramian_continuous(A=[[-1, 0], [0, -2]], C=[[1, 1]]))
+        assert data["controllability_gramian"] is not None
 
-    def test_analyze_invalid_dimensions_returns_error(self):
-        """Non-square A matrix returns an error."""
-        A = [[1, 0, 0], [0, 1, 0]]
-        B = [[0], [1]]
-        data = json.loads(analyze_system(A=A, B=B))
+    # ── Discrete Gramians ──
+
+    def test_gramian_discrete_stable_system_returns_gramians(self):
+        """Stable discrete system returns controllability and observability Gramians."""
+        data = json.loads(gramian_discrete(
+            A=[[0.9, 0], [0, 0.8]], B=[[0.1], [0.2]], C=[[1, 0], [0, 1]], dt=0.1
+        ))
+        assert data["controllability_gramian"] is not None
+        assert data["observability_gramian"] is not None
+
+    def test_gramian_discrete_returns_eigenvalues(self):
+        """Discrete Gramian eigenvalues are returned sorted descending."""
+        data = json.loads(gramian_discrete(
+            A=[[0.9, 0], [0, 0.8]], B=[[0.1], [0.2]], C=[[1, 0], [0, 1]], dt=0.1
+        ))
+        assert data["controllability_gramian_eigs"] is not None
+        assert len(data["controllability_gramian_eigs"]) == 2
+
+    def test_gramian_discrete_unstable_returns_none(self):
+        """Unstable discrete system returns None for Gramians."""
+        data = json.loads(gramian_discrete(
+            A=[[1.1, 0], [0, 1.2]], B=[[0.1], [0.2]], C=[[1, 0], [0, 1]], dt=0.1
+        ))
+        assert data["controllability_gramian"] is None
+
+    # ── Finite-horizon Gramians ──
+
+    def test_gramian_finite_returns_gramians(self):
+        """Finite-horizon Gramians work for any A (stable or unstable)."""
+        data = json.loads(gramian_finite(A=[[1, 0], [0, 1]], B=[[1], [1]], C=[[1, 1]], T=1.0))
+        assert "controllability_gramian" in data
+        assert "observability_gramian" in data
+        assert data["horizon"] == 1.0
+
+    def test_gramian_finite_stable_system(self):
+        """Finite-horizon Gramians work for stable systems."""
+        data = json.loads(gramian_finite(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]], T=5.0))
+        assert len(data["controllability_gramian"]) == 2
+
+    def test_gramian_finite_negative_T_returns_error(self):
+        """Negative horizon returns an error."""
+        data = json.loads(gramian_finite(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]], T=-1.0))
         assert "error" in data
+
+    # ── System Summary ──
+
+    def test_system_summary_returns_string(self):
+        """system_summary returns a human-readable report."""
+        data = json.loads(system_summary(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]]))
+        assert "summary" in data
+        assert "System order" in data["summary"]
+
+    def test_system_summary_invalid_A_returns_error(self):
+        """Non-square A returns an error in summary."""
+        data = json.loads(system_summary(A=[[1, 0, 0], [0, 1, 0]]))
+        assert "error" in data
+
+    # ── Balanced Truncation ──
 
     def test_balanced_truncation_reduces_order(self):
         """Balanced truncation reduces a 2nd-order system to 1st-order."""
-        A = [[-1, 0], [0, -2]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(balanced_truncation(A=A, B=B, C=C, r=1))
+        data = json.loads(balanced_truncation(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]], r=1))
         assert data["reduced_order"] == 1
         assert len(data["Ar"]) == 1
         assert len(data["Br"]) == 1
@@ -1011,25 +1078,136 @@ class TestSystemAnalysis:
 
     def test_balanced_truncation_full_order_preserves_system(self):
         """Truncation at r=n preserves the original system (up to similarity)."""
-        A = [[-1, 0], [0, -2]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(balanced_truncation(A=A, B=B, C=C, r=2))
+        data = json.loads(balanced_truncation(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]], r=2))
         assert data["reduced_order"] == 2
         assert len(data["Ar"]) == 2
 
     def test_balanced_truncation_invalid_r_returns_error(self):
         """Truncation with r <= 0 returns an error."""
-        A = [[-1, 0], [0, -2]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(balanced_truncation(A=A, B=B, C=C, r=0))
+        data = json.loads(balanced_truncation(A=[[-1, 0], [0, -2]], B=[[1], [1]], C=[[1, 1]], r=0))
         assert "error" in data
 
     def test_balanced_truncation_unstable_returns_error(self):
         """Truncation on an unstable system returns an error."""
-        A = [[1, 0], [0, 1]]
-        B = [[1], [1]]
-        C = [[1, 1]]
-        data = json.loads(balanced_truncation(A=A, B=B, C=C, r=1))
+        data = json.loads(balanced_truncation(A=[[1, 0], [0, 1]], B=[[1], [1]], C=[[1, 1]], r=1))
         assert "error" in data
+
+
+class TestMPCConstraints:
+    """Verify MPC constraint tools: set and get constraints."""
+
+    def test_set_mpc_constraints_on_mpc_lti(self):
+        """Setting constraints on MPC_LTI returns success."""
+        create_controller(name="mpc", type="MPC_LTI", params={
+            "dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0], "control_cost": [0.1, 0.1],
+        })
+        result = set_mpc_constraints(name="mpc", upper=[0.5, 0.5], lower=[-0.5, -0.5])
+        assert "Constraints set" in result
+
+    def test_set_mpc_constraints_on_mpc_deltau(self):
+        """Setting constraints on MPC_DeltaU returns success."""
+        create_controller(name="mpc", type="MPC_DeltaU", params={
+            "dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0],
+            "control_cost": [0.1, 0.1], "delta_u_penalty": [0.5, 0.5],
+        })
+        result = set_mpc_constraints(name="mpc", upper=[0.5, 0.5, 0.5, 0.5], lower=[-0.5, -0.5, -0.5, -0.5])
+        assert "Constraints set" in result
+
+    def test_set_mpc_constraints_with_custom_matrix(self):
+        """Setting constraints with a custom F matrix works."""
+        create_controller(name="mpc", type="MPC_LTI", params={
+            "dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0], "control_cost": [0.1, 0.1],
+        })
+        result = set_mpc_constraints(
+            name="mpc",
+            matrix=[[1, 0], [0, 1], [-1, 0], [0, -1]],
+            upper=[0.5, 0.5, 0.5, 0.5],
+            lower=[-0.5, -0.5, -0.5, -0.5],
+        )
+        assert "Constraints set" in result
+
+    def test_set_mpc_constraints_on_non_mpc_returns_error(self):
+        """Setting constraints on a PID controller returns an error."""
+        create_controller(name="pid", type="PID", params={"dt": 0.02, "kp": [1.0], "ki": [0.0], "kd": [0.0]})
+        result = set_mpc_constraints(name="pid", upper=[0.5], lower=[-0.5])
+        assert "not an MPC type" in result
+
+    def test_set_mpc_constraints_unknown_name_returns_error(self):
+        """Setting constraints on a nonexistent controller returns an error."""
+        result = set_mpc_constraints(name="nonexistent", upper=[0.5], lower=[-0.5])
+        assert "No controller named" in result
+
+    def test_get_mpc_constraints_returns_bounds(self):
+        """Getting constraints returns the upper and lower bounds."""
+        create_controller(name="mpc", type="MPC_LTI", params={
+            "dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0], "control_cost": [0.1, 0.1],
+        })
+        set_mpc_constraints(name="mpc", upper=[0.5, 0.5, 0.5, 0.5], lower=[-0.5, -0.5, -0.5, -0.5])
+        data = json.loads(get_mpc_constraints(name="mpc"))
+        assert data["upper"] == [0.5, 0.5, 0.5, 0.5]
+        assert data["lower"] == [-0.5, -0.5, -0.5, -0.5]
+
+    def test_get_mpc_constraints_unknown_name_returns_error(self):
+        """Getting constraints on a nonexistent controller returns an error."""
+        data = json.loads(get_mpc_constraints(name="nonexistent"))
+        assert "error" in data
+
+    def test_get_mpc_constraints_on_non_mpc_returns_error(self):
+        """Getting constraints on a PID controller returns an error."""
+        create_controller(name="pid", type="PID", params={"dt": 0.02, "kp": [1.0], "ki": [0.0], "kd": [0.0]})
+        data = json.loads(get_mpc_constraints(name="pid"))
+        assert "error" in data
+
+    def test_mpc_constraints_are_respected_in_compute(self):
+        """MPC with hard constraints respects the bounds in compute()."""
+        create_controller(name="mpc", type="MPC_LTI", params={
+            "dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0], "control_cost": [0.1, 0.1],
+        })
+        set_mpc_constraints(name="mpc", upper=[0.5, 0.5, 0.5, 0.5], lower=[-0.5, -0.5, -0.5, -0.5])
+        data = json.loads(controller_compute(name="mpc", state=[10.0, 10.0]))
+        assert all(abs(v) <= 0.5 + 1e-4 for v in data["action"])
+
+
+class TestPIDOutputLimits:
+    """Verify PID output limits tool."""
+
+    def test_set_pid_output_limits_returns_success(self):
+        """Setting output limits on a PID controller returns success."""
+        create_controller(name="pid", type="PID", params={"dt": 0.02, "kp": [2.0], "ki": [0.1], "kd": [0.5]})
+        result = set_pid_output_limits(name="pid", min=[-0.5], max=[0.5])
+        assert "Output limits set" in result
+
+    def test_set_pid_output_limits_clamps_output(self):
+        """PID with output limits clamps the control action."""
+        create_controller(name="pid", type="PID", params={"dt": 0.02, "kp": [10.0], "ki": [0.0], "kd": [0.0]})
+        set_pid_output_limits(name="pid", min=[-0.5], max=[0.5])
+        data = json.loads(controller_compute(name="pid", state=[1.0], reference=[0.0]))
+        assert abs(data["action"][0]) <= 0.5 + 1e-4
+
+    def test_set_pid_output_limits_anti_windup(self):
+        """PID with output limits prevents integral windup on saturated channels."""
+        create_controller(name="pid", type="PID", params={"dt": 0.02, "kp": [0.0], "ki": [10.0], "kd": [0.0]})
+        set_pid_output_limits(name="pid", min=[-0.5], max=[0.5])
+        for _ in range(10):
+            data = json.loads(controller_compute(name="pid", state=[1.0], reference=[0.0]))
+        assert abs(data["action"][0]) <= 0.5 + 1e-4
+
+    def test_set_pid_output_limits_on_non_pid_returns_error(self):
+        """Setting output limits on an LQR controller returns an error."""
+        create_controller(name="lqr", type="LQR", params={"state_cost": [1.0], "control_cost": [1.0], "dt": 0.1})
+        result = set_pid_output_limits(name="lqr", min=[-0.5], max=[0.5])
+        assert "not a PID type" in result
+
+    def test_set_pid_output_limits_unknown_name_returns_error(self):
+        """Setting output limits on a nonexistent controller returns an error."""
+        result = set_pid_output_limits(name="nonexistent", min=[-0.5], max=[0.5])
+        assert "No controller named" in result
+
+    def test_pid_from_config_with_output_limits(self):
+        """PID created from config with output_limits clamps output."""
+        create_controller(name="pid", type="PID", params={
+            "dt": 0.02, "kp": [10.0], "ki": [0.0], "kd": [0.0],
+            "output_limits": {"min": [-0.5], "max": [0.5]},
+        })
+        data = json.loads(controller_compute(name="pid", state=[1.0], reference=[0.0]))
+        assert abs(data["action"][0]) <= 0.5 + 1e-4

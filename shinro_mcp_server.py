@@ -25,17 +25,14 @@ def _from_list(data: list[float]) -> np.ndarray:
 
 
 def _to_col(data: list[float]) -> np.ndarray:
-    """Convert a flat list to a column vector (n, 1)."""
     return np.array(data, dtype=np.float64).reshape(-1, 1)
 
 
 def _from_col(arr: np.ndarray) -> list[float]:
-    """Convert a column vector (n, 1) to a flat list."""
     return arr.flatten().tolist()
 
 
 def _set_mpc_default_constraints(ctrl: Any) -> None:
-    """Set unconstrained bounds on an MPC controller if none were set."""
     if not hasattr(ctrl, "A_constraints"):
         import scipy.sparse as sp
         n_c = ctrl.m
@@ -47,6 +44,20 @@ def _set_mpc_default_constraints(ctrl: Any) -> None:
         )
         ctrl.lcons = np.tile(lo, ctrl.N)
         ctrl.ucons = np.tile(hi, ctrl.N)
+
+
+def _make_analyzer(
+    A: list[list[float]],
+    B: list[list[float]] | None = None,
+    C: list[list[float]] | None = None,
+    D: list[list[float]] | None = None,
+    dt: float | None = None,
+) -> LTISystemsAnalyzer:
+    A_arr = np.array(A, dtype=np.float64)
+    B_arr = np.array(B, dtype=np.float64) if B is not None else None
+    C_arr = np.array(C, dtype=np.float64) if C is not None else None
+    D_arr = np.array(D, dtype=np.float64) if D is not None else None
+    return LTISystemsAnalyzer(A=A_arr, B=B_arr, C=C_arr, D=D_arr, dt=dt)
 
 
 # ── Controller tools ──────────────────────────────────────────────────────────
@@ -137,6 +148,97 @@ def controller_reset(name: str) -> str:
         return f"No controller named '{name}'"
     _store[name].reset()
     return f"Controller '{name}' reset"
+
+
+@server.tool()
+def set_mpc_constraints(
+    name: str,
+    upper: list[float],
+    lower: list[float],
+    matrix: list[list[float]] | None = None,
+) -> str:
+    """Set or update linear constraints on a stored MPC controller.
+
+    Defines F u_k <= upper and F u_k >= lower for each step k,
+    tiled across the horizon. If matrix is omitted, defaults to [I; -I].
+
+    Args:
+        name: Name of the stored MPC controller instance.
+        upper: Upper bound vector (n_c,).
+        lower: Lower bound vector (n_c,).
+        matrix: Per-step constraint matrix F (n_c, n_u). Defaults to [I; -I].
+    """
+    if name not in _store:
+        return f"No controller named '{name}'. Create one first."
+    ctrl = _store[name]
+    registry_name = getattr(ctrl, "_registry_name", "")
+    if registry_name not in ("MPC_LTI", "MPC_DeltaU"):
+        return f"Controller '{name}' is not an MPC type."
+
+    bk = NumpyBackend()
+    m = ctrl.m
+    if matrix is not None:
+        F = bk.array(matrix)
+    else:
+        F = bk.vstack([bk.eye(m), -bk.eye(m)])
+    ctrl.constraints(F, bk.array(upper), bk.array(lower))
+    return f"Constraints set on MPC controller '{name}'"
+
+
+@server.tool()
+def get_mpc_constraints(name: str) -> str:
+    """Get the current constraints of a stored MPC controller.
+
+    Returns the per-step constraint matrix F, upper bounds, and lower bounds.
+
+    Args:
+        name: Name of the stored MPC controller instance.
+    """
+    if name not in _store:
+        return json.dumps({"error": f"No controller named '{name}'"})
+    ctrl = _store[name]
+    registry_name = getattr(ctrl, "_registry_name", "")
+    if registry_name not in ("MPC_LTI", "MPC_DeltaU"):
+        return json.dumps({"error": f"Controller '{name}' is not an MPC type."})
+    if not hasattr(ctrl, "A_constraints"):
+        return json.dumps({"error": "No constraints set on this MPC controller."})
+
+    n_c = ctrl.lcons.shape[0] // ctrl.N
+    lo = ctrl.lcons[:n_c]
+    hi = ctrl.ucons[:n_c]
+    return json.dumps({
+        "upper": _to_list(hi),
+        "lower": _to_list(lo),
+    })
+
+
+@server.tool()
+def set_pid_output_limits(
+    name: str,
+    min: list[float],
+    max: list[float],
+) -> str:
+    """Set output clamping limits on a stored PID controller.
+
+    Enables anti-windup: when output is clamped, the integral term
+    back-calculates on saturated channels.
+
+    Args:
+        name: Name of the stored PID controller instance.
+        min: Minimum output limits per channel (n,).
+        max: Maximum output limits per channel (n,).
+    """
+    if name not in _store:
+        return f"No controller named '{name}'. Create one first."
+    ctrl = _store[name]
+    registry_name = getattr(ctrl, "_registry_name", "")
+    if registry_name != "PID":
+        return f"Controller '{name}' is not a PID type."
+
+    bk = NumpyBackend()
+    ctrl.min_limits = bk.array(min)
+    ctrl.max_limits = bk.array(max)
+    return f"Output limits set on PID controller '{name}'"
 
 
 @server.tool()
@@ -394,21 +496,212 @@ def list_trajectories() -> str:
     return json.dumps({"trajectories": info})
 
 
-# ── System analysis tools ────────────────────────────────────────────────────
+# ── System analysis tools ─────────────────────────────────────────────────────
 
 
 @server.tool()
-def analyze_system(
+def analyze_controllability(
+    A: list[list[float]],
+    B: list[list[float]],
+) -> str:
+    """Check controllability of a state-space system via Kalman rank test.
+
+    Returns the controllability matrix, its rank, condition number,
+    and whether the system is controllable.
+
+    Args:
+        A: State matrix (n x n).
+        B: Input matrix (n x m).
+    """
+    try:
+        analyzer = _make_analyzer(A=A, B=B)
+        C_mat = analyzer.controllabilty()
+        rank = int(np.linalg.matrix_rank(C_mat))
+        n = np.array(A, dtype=np.float64).shape[0]
+        return json.dumps({
+            "controllable": rank == n,
+            "rank": rank,
+            "n": n,
+            "condition": float(np.linalg.cond(C_mat)) if rank == n else None,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def analyze_observability(
+    A: list[list[float]],
+    C: list[list[float]],
+) -> str:
+    """Check observability of a state-space system via Kalman rank test.
+
+    Returns the observability matrix, its rank, condition number,
+    and whether the system is observable.
+
+    Args:
+        A: State matrix (n x n).
+        C: Output matrix (p x n).
+    """
+    try:
+        analyzer = _make_analyzer(A=A, C=C)
+        O_mat = analyzer.observability()
+        rank = int(np.linalg.matrix_rank(O_mat))
+        n = np.array(A, dtype=np.float64).shape[0]
+        return json.dumps({
+            "observable": rank == n,
+            "rank": rank,
+            "n": n,
+            "condition": float(np.linalg.cond(O_mat)) if rank == n else None,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def gramian_continuous(
+    A: list[list[float]],
+    B: list[list[float]] | None = None,
+    C: list[list[float]] | None = None,
+) -> str:
+    """Compute infinite-horizon continuous-time Gramians and Hankel singular values.
+
+    Requires A to be Hurwitz (all eigenvalues with negative real part).
+    For unstable systems, use gramian_finite() instead.
+
+    Args:
+        A: State matrix (n x n).
+        B: Input matrix (n x m). Defaults to zeros.
+        C: Output matrix (p x n). Defaults to zeros.
+    """
+    try:
+        analyzer = _make_analyzer(A=A, B=B, C=C)
+        result = {}
+        try:
+            wc = analyzer.controllability_gramian()
+            result["controllability_gramian"] = wc.tolist()
+            result["controllability_gramian_eigs"] = (
+                np.sort(np.real(np.linalg.eigvals(wc)))[::-1].tolist()
+            )
+        except ValueError as e:
+            result["controllability_gramian"] = None
+            result["controllability_gramian_error"] = str(e)
+
+        try:
+            wo = analyzer.observability_gramian()
+            result["observability_gramian"] = wo.tolist()
+            result["observability_gramian_eigs"] = (
+                np.sort(np.real(np.linalg.eigvals(wo)))[::-1].tolist()
+            )
+        except ValueError as e:
+            result["observability_gramian"] = None
+            result["observability_gramian_error"] = str(e)
+
+        try:
+            hsv = analyzer.hankel_singular_values()
+            result["hankel_singular_values"] = hsv.flatten().tolist()
+        except Exception:
+            result["hankel_singular_values"] = None
+
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def gramian_discrete(
+    A: list[list[float]],
+    B: list[list[float]] | None = None,
+    C: list[list[float]] | None = None,
+    dt: float = 0.01,
+) -> str:
+    """Compute infinite-horizon discrete-time Gramians and Hankel singular values.
+
+    Requires the discrete-time system to be asymptotically stable
+    (all eigenvalues inside the unit circle).
+
+    Args:
+        A: State matrix (n x n).
+        B: Input matrix (n x m). Defaults to zeros.
+        C: Output matrix (p x n). Defaults to zeros.
+        dt: Sampling time in seconds (default: 0.01).
+    """
+    try:
+        analyzer = _make_analyzer(A=A, B=B, C=C, dt=dt)
+        result = {}
+        try:
+            wc = analyzer.discrete_controllability_gramian()
+            result["controllability_gramian"] = wc.tolist()
+            result["controllability_gramian_eigs"] = (
+                np.sort(np.real(np.linalg.eigvals(wc)))[::-1].tolist()
+            )
+        except ValueError as e:
+            result["controllability_gramian"] = None
+            result["controllability_gramian_error"] = str(e)
+
+        try:
+            wo = analyzer.discrete_observability_gramian()
+            result["observability_gramian"] = wo.tolist()
+            result["observability_gramian_eigs"] = (
+                np.sort(np.real(np.linalg.eigvals(wo)))[::-1].tolist()
+            )
+        except ValueError as e:
+            result["observability_gramian"] = None
+            result["observability_gramian_error"] = str(e)
+
+        try:
+            hsv = analyzer.hankel_singular_values()
+            result["hankel_singular_values"] = hsv.flatten().tolist()
+        except Exception:
+            result["hankel_singular_values"] = None
+
+        return json.dumps(result)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def gramian_finite(
+    A: list[list[float]],
+    B: list[list[float]] | None = None,
+    C: list[list[float]] | None = None,
+    T: float = 5.0,
+) -> str:
+    """Compute finite-horizon Gramians via ODE integration.
+
+    Works for any A (stable or unstable). Integrates the Lyapunov
+    differential equation from 0 to T.
+
+    Args:
+        A: State matrix (n x n).
+        B: Input matrix (n x m). Defaults to zeros.
+        C: Output matrix (p x n). Defaults to zeros.
+        T: Horizon length in seconds (default: 5.0).
+    """
+    try:
+        analyzer = _make_analyzer(A=A, B=B, C=C)
+        wc = analyzer.controllability_gramian_finite(T)
+        wo = analyzer.observability_gramian_finite(T)
+        return json.dumps({
+            "controllability_gramian": wc.tolist(),
+            "observability_gramian": wo.tolist(),
+            "horizon": T,
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@server.tool()
+def system_summary(
     A: list[list[float]],
     B: list[list[float]] | None = None,
     C: list[list[float]] | None = None,
     D: list[list[float]] | None = None,
     dt: float | None = None,
 ) -> str:
-    """Analyze a linear time-invariant state-space system.
+    """Produce a human-readable summary of system properties.
 
-    Returns controllability/observability status, Gramian eigenvalues,
-    Hankel singular values, and rank/condition numbers.
+    Includes controllability/observability status, Gramian eigenvalues,
+    Hankel singular values, and balanced-truncation error bound.
 
     Args:
         A: State matrix (n x n).
@@ -417,51 +710,9 @@ def analyze_system(
         D: Feedthrough matrix (p x m). Defaults to zeros.
         dt: Sampling time for discrete-time analysis. Defaults to None (continuous).
     """
-    A_arr = np.array(A, dtype=np.float64)
-    B_arr = np.array(B, dtype=np.float64) if B is not None else None
-    C_arr = np.array(C, dtype=np.float64) if C is not None else None
-    D_arr = np.array(D, dtype=np.float64) if D is not None else None
-
     try:
-        analyzer = LTISystemsAnalyzer(A=A_arr, B=B_arr, C=C_arr, D=D_arr, dt=dt)
-        result = {
-            "n": A_arr.shape[0],
-            "controllable": bool(analyzer.is_controllable()),
-            "observable": bool(analyzer.is_observable()),
-            "rank_report": {
-                "controllability": {
-                    "rank": int(analyzer.rank_report()["controllability"][0]),
-                    "condition": float(analyzer.rank_report()["controllability"][1]),
-                },
-                "observability": {
-                    "rank": int(analyzer.rank_report()["observability"][0]),
-                    "condition": float(analyzer.rank_report()["observability"][1]),
-                },
-            },
-        }
-        try:
-            hsv = analyzer.hankel_singular_values()
-            result["hankel_singular_values"] = hsv.flatten().tolist()
-        except Exception:
-            result["hankel_singular_values"] = None
-
-        try:
-            wc = analyzer.controllability_gramian()
-            result["controllability_gramian_eigs"] = (
-                np.sort(np.real(np.linalg.eigvals(wc)))[::-1].tolist()
-            )
-        except Exception:
-            result["controllability_gramian_eigs"] = None
-
-        try:
-            wo = analyzer.observability_gramian()
-            result["observability_gramian_eigs"] = (
-                np.sort(np.real(np.linalg.eigvals(wo)))[::-1].tolist()
-            )
-        except Exception:
-            result["observability_gramian_eigs"] = None
-
-        return json.dumps(result)
+        analyzer = _make_analyzer(A=A, B=B, C=C, D=D, dt=dt)
+        return json.dumps({"summary": analyzer.summary()})
     except Exception as e:
         return json.dumps({"error": str(e)})
 

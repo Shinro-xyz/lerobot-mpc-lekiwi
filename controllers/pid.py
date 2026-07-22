@@ -106,6 +106,7 @@ class PIDController(Controller):
             ki: List of integral gains (n,).
             kd: List of derivative gains (n,).
             dt: Time step.
+            output_limits: Optional dict with ``min`` and ``max`` lists.
 
         Args:
             config: TOML config dict.
@@ -116,10 +117,18 @@ class PIDController(Controller):
         """
         bk = backend or NumpyBackend()
         n = len(config.get("kp", [1]))
+        output_limits = config.get("output_limits")
+        limits = None
+        if output_limits:
+            limits = (
+                bk.array(output_limits["min"]),
+                bk.array(output_limits["max"]),
+            )
         return cls(
             kp=bk.from_numpy(config.get("kp", [1.0] * n)),
             ki=bk.from_numpy(config.get("ki", [0.0] * n)),
             kd=bk.from_numpy(config.get("kd", [0.0] * n)),
             dt=config["dt"],
+            output_limits=limits,
             backend=bk,
         )

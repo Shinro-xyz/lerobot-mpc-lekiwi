@@ -71,18 +71,21 @@ def server():
 class TestServerProtocol:
     """Verify the server starts and speaks correct JSON-RPC."""
 
-    def test_tools_list_returns_all_17_tools(self, server):
-        """tools/list returns 17 tools with expected names."""
+    def test_tools_list_returns_all_25_tools(self, server):
+        """tools/list returns 25 tools with expected names."""
         resp = server("tools/list")
         assert resp["jsonrpc"] == "2.0"
         assert "id" in resp
         assert "result" in resp
         tools = resp["result"]["tools"]
         tool_names = [t["name"] for t in tools]
-        assert len(tools) == 17
+        assert len(tools) == 25
         assert "create_controller" in tool_names
         assert "controller_compute" in tool_names
         assert "controller_reset" in tool_names
+        assert "set_mpc_constraints" in tool_names
+        assert "get_mpc_constraints" in tool_names
+        assert "set_pid_output_limits" in tool_names
         assert "list_controller_types" in tool_names
         assert "list_controllers" in tool_names
         assert "create_estimator" in tool_names
@@ -95,7 +98,12 @@ class TestServerProtocol:
         assert "trajectory_position_at" in tool_names
         assert "list_trajectory_types" in tool_names
         assert "list_trajectories" in tool_names
-        assert "analyze_system" in tool_names
+        assert "analyze_controllability" in tool_names
+        assert "analyze_observability" in tool_names
+        assert "gramian_continuous" in tool_names
+        assert "gramian_discrete" in tool_names
+        assert "gramian_finite" in tool_names
+        assert "system_summary" in tool_names
         assert "balanced_truncation" in tool_names
 
     def test_tools_list_tool_has_input_schema(self, server):
@@ -532,47 +540,143 @@ class TestErrorHandlingFunctional:
 class TestSystemAnalysisFunctional:
     """End-to-end system analysis flow through the MCP server."""
 
-    def test_analyze_system_returns_controllability_and_observability(self, server):
-        """analyze_system returns controllability and observability status."""
+    def test_analyze_controllability_returns_status(self, server):
+        """analyze_controllability returns controllability status."""
         resp = server("tools/call", {
-            "name": "analyze_system",
-            "arguments": {
-                "A": [[0, 1], [0, 0]],
-                "B": [[0], [1]],
-                "C": [[1, 0]],
-            },
+            "name": "analyze_controllability",
+            "arguments": {"A": [[0, 1], [0, 0]], "B": [[0], [1]]},
         })
         data = json.loads(resp["result"]["content"][0]["text"])
         assert data["controllable"] is True
-        assert data["observable"] is True
-        assert data["n"] == 2
+        assert data["rank"] == 2
 
-    def test_analyze_system_with_gramians(self, server):
-        """analyze_system returns Gramian eigenvalues for stable systems."""
+    def test_analyze_observability_returns_status(self, server):
+        """analyze_observability returns observability status."""
         resp = server("tools/call", {
-            "name": "analyze_system",
-            "arguments": {
-                "A": [[-1, 0], [0, -2]],
-                "B": [[1], [1]],
-                "C": [[1, 1]],
-            },
+            "name": "analyze_observability",
+            "arguments": {"A": [[0, 1], [0, 0]], "C": [[1, 0]]},
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert data["observable"] is True
+
+    def test_gramian_continuous_returns_gramians(self, server):
+        """gramian_continuous returns Gramian eigenvalues for stable systems."""
+        resp = server("tools/call", {
+            "name": "gramian_continuous",
+            "arguments": {"A": [[-1, 0], [0, -2]], "B": [[1], [1]], "C": [[1, 1]]},
         })
         data = json.loads(resp["result"]["content"][0]["text"])
         assert data["controllability_gramian_eigs"] is not None
         assert data["observability_gramian_eigs"] is not None
-        assert data["hankel_singular_values"] is not None
+
+    def test_gramian_discrete_returns_gramians(self, server):
+        """gramian_discrete returns Gramians for stable discrete systems."""
+        resp = server("tools/call", {
+            "name": "gramian_discrete",
+            "arguments": {
+                "A": [[0.9, 0], [0, 0.8]], "B": [[0.1], [0.2]],
+                "C": [[1, 0], [0, 1]], "dt": 0.1,
+            },
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert data["controllability_gramian"] is not None
+
+    def test_gramian_finite_returns_gramians(self, server):
+        """gramian_finite returns Gramians for any system."""
+        resp = server("tools/call", {
+            "name": "gramian_finite",
+            "arguments": {"A": [[1, 0], [0, 1]], "B": [[1], [1]], "C": [[1, 1]], "T": 1.0},
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert "controllability_gramian" in data
+
+    def test_system_summary_returns_report(self, server):
+        """system_summary returns a human-readable report."""
+        resp = server("tools/call", {
+            "name": "system_summary",
+            "arguments": {"A": [[-1, 0], [0, -2]], "B": [[1], [1]], "C": [[1, 1]]},
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert "System order" in data["summary"]
 
     def test_balanced_truncation_reduces_order(self, server):
         """balanced_truncation reduces a 2nd-order system to 1st-order."""
         resp = server("tools/call", {
             "name": "balanced_truncation",
             "arguments": {
-                "A": [[-1, 0], [0, -2]],
-                "B": [[1], [1]],
-                "C": [[1, 1]],
-                "r": 1,
+                "A": [[-1, 0], [0, -2]], "B": [[1], [1]], "C": [[1, 1]], "r": 1,
             },
         })
         data = json.loads(resp["result"]["content"][0]["text"])
         assert data["reduced_order"] == 1
         assert data["error_bound"] > 0
+
+
+class TestMPCConstraintsFunctional:
+    """End-to-end MPC constraint flow through the MCP server."""
+
+    def test_set_and_get_mpc_constraints(self, server):
+        """Set constraints on MPC, then get them back."""
+        server("tools/call", {
+            "name": "create_controller",
+            "arguments": {
+                "name": "mpc", "type": "MPC_LTI",
+                "params": {"dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0], "control_cost": [0.1, 0.1]},
+            },
+        })
+        resp = server("tools/call", {
+            "name": "set_mpc_constraints",
+            "arguments": {"name": "mpc", "upper": [0.5, 0.5], "lower": [-0.5, -0.5]},
+        })
+        assert "Constraints set" in resp["result"]["content"][0]["text"]
+
+        resp = server("tools/call", {
+            "name": "get_mpc_constraints",
+            "arguments": {"name": "mpc"},
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert data["upper"] == [0.5, 0.5]
+
+    def test_mpc_constraints_respected_in_compute(self, server):
+        """MPC with constraints respects bounds in compute."""
+        server("tools/call", {
+            "name": "create_controller",
+            "arguments": {
+                "name": "mpc", "type": "MPC_LTI",
+                "params": {"dt": 0.02, "horizon": 5, "state_cost": [1.0, 1.0], "control_cost": [0.1, 0.1]},
+            },
+        })
+        server("tools/call", {
+            "name": "set_mpc_constraints",
+            "arguments": {"name": "mpc", "upper": [0.5, 0.5, 0.5, 0.5], "lower": [-0.5, -0.5, -0.5, -0.5]},
+        })
+        resp = server("tools/call", {
+            "name": "controller_compute",
+            "arguments": {"name": "mpc", "state": [10.0, 10.0]},
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert all(abs(v) <= 0.5 + 1e-4 for v in data["action"])
+
+
+class TestPIDOutputLimitsFunctional:
+    """End-to-end PID output limits flow through the MCP server."""
+
+    def test_set_pid_output_limits_clamps_output(self, server):
+        """PID with output limits clamps the control action."""
+        server("tools/call", {
+            "name": "create_controller",
+            "arguments": {
+                "name": "pid", "type": "PID",
+                "params": {"dt": 0.02, "kp": [10.0], "ki": [0.0], "kd": [0.0]},
+            },
+        })
+        server("tools/call", {
+            "name": "set_pid_output_limits",
+            "arguments": {"name": "pid", "min": [-0.5], "max": [0.5]},
+        })
+        resp = server("tools/call", {
+            "name": "controller_compute",
+            "arguments": {"name": "pid", "state": [1.0], "reference": [0.0]},
+        })
+        data = json.loads(resp["result"]["content"][0]["text"])
+        assert abs(data["action"][0]) <= 0.5 + 1e-4
