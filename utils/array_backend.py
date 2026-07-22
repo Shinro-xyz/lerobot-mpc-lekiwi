@@ -263,6 +263,8 @@ class NumpyBackend(ArrayBackend):
         return np.linalg.eigvals(x)
 
     def matrix_rank(self, x):
+        if x.ndim >= 2 and any(s == 0 for s in x.shape[-2:]):
+            return np.asarray(0)
         return np.linalg.matrix_rank(x)
 
     def cond(self, x):
@@ -413,6 +415,8 @@ class TorchBackend(ArrayBackend):
         return self.torch.linalg.eigvals(x)
 
     def matrix_rank(self, x):
+        if x.ndim >= 2 and any(s == 0 for s in x.shape[-2:]):
+            return self.torch.tensor(0, device=x.device, dtype=x.dtype)
         return self.torch.linalg.matrix_rank(x)
 
     def cond(self, x):
