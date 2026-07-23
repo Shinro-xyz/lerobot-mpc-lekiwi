@@ -1,4 +1,4 @@
-# lerobot-mpc-lekiwi — AGENTS.md
+# shinro-python-modules — AGENTS.md
 
 This project uses a **SQLite codebase index** stored in the repo itself. Query the index to understand the codebase before making changes — no need to keep the full codebase in context.
 
@@ -33,34 +33,56 @@ python3 ~/.hermes/scripts/codebase_indexer.py .
 
 ## Project Overview
 
-Whole-body control framework for the lekiwi robot — a holonomic mobile base + 6-DOF arm (SO-ARM100). Built on four abstract base classes: **Controller**, **Plant**, **StateEstimator**, and **TrajectoryGenerator**.
+**Comprehensive control suite** for robotics — a modular library of controllers, plants, state estimators, and trajectory generators. Built on five abstract base classes: **Controller**, **Plant**, **StateEstimator**, **TrajectoryGenerator**, and **PhysicsEngine**.
+
+### Design Goals
+
+- **Modular**: Mix and match any controller with any plant, estimator, trajectory, or physics engine
+- **Backend-agnostic**: Full numpy/torch support via `ArrayBackend` abstraction
+- **Engine-agnostic**: Physics engine abstraction (MuJoCo, Isaac Lab, PyBullet, Drake, etc.)
+- **Linear + Nonlinear**: LTI components for fast prototyping, nonlinear variants for real-world fidelity
+- **Config-driven**: TOML-based component configuration via factory/registry pattern
+
+### Current Components
+
+| Category | Linear | Nonlinear (planned) |
+|----------|--------|---------------------|
+| **Controllers** | LQR, PID, MPC (LTI), LeRobot diffusion | NMPC, iLQR, MPPI, computed torque, sliding mode, adaptive |
+| **Plants** | HolonomicMobileRobot, ArmRobot (double integrator) | Rigid-body arm, unicycle, cartpole, double pendulum |
+| **Estimators** | Kalman filter, Luenberger observer | EKF, UKF, particle filter |
+| **Trajectories** | Cubic, Quintic, waypoint/phase schedules | B-spline, Lissajous, minimum-snap |
+| **Physics Engines** | MuJoCo | Isaac Lab, PyBullet, Drake, null (no sim) |
 
 ### Key Files
 
 | File | Purpose |
 |------|---------|
-| `components.py` | ABCs: Controller, Plant, StateEstimator, TrajectoryGenerator |
+| `components.py` | ABCs: Controller, Plant, StateEstimator, TrajectoryGenerator, PhysicsEngine |
 | `controllers/mpc_lti.py` | MPC with OSQP QP solver — trajectory optimization |
 | `controllers/lqr.py` | LQR with DARE solve — regulation/stabilization |
 | `controllers/pid.py` | PID with anti-windup — joint-space position servo |
+| `controllers/lerobot_adapter.py` | Learned policy adapter (diffusion, ACT, pi0) |
 | `plants/holonomicmobilerobot.py` | 3-DOF base with omni-wheel kinematics |
 | `plants/armrobot.py` | 6-DOF arm: FK, Jacobian, IK, Cartesian step |
 | `estimators/kalman_filter.py` | Discrete Kalman filter — predict-update cycle |
 | `estimators/luenberger_observer.py` | Observer dynamics — x̂ = Ax̂ + Bu + L(y − Cx̂) |
 | `trajectories/cubic_polynomial.py` | 3rd-order, position + velocity continuity |
 | `trajectories/quintic_polynomial.py` | 5th-order, position + velocity + acceleration continuity |
-| `lekiwi_sim.py` | MuJoCo simulation wrapper |
-| `demo_base_movement.py` | Base tracking demo (LQR/MPC + observer) |
-| `capture_gif.py` | Arm extension demo (cubic trajectory + IK) |
-| `capture_demo.py` | Pick-and-place GIF capture |
+| `physics_engine/mujoco.py` | MuJoCo engine adapter |
+| `simulation/robotsim.py` | Generic robot simulation factory (config-driven) |
+| `lekiwi_sim.py` | Legacy LeKiwi simulation wrapper |
+| `factories/registry.py` | Component registry + factory classes |
+| `utils/array_backend.py` | NumpyBackend / TorchBackend abstraction |
+| `utils/controllability_checker.py` | LTI system analysis (Gramians, balanced truncation) |
 | `test_pick_and_place.py` | Integration tests |
 
 ### Architecture
 
 ```
-Controller (MPC / LQR / PID)  →  Plant (Base / Arm)
-StateEstimator (KF / Observer) →  Controller (state feedback)
-TrajectoryGenerator (Cubic / Quintic) →  Controller (reference path)
+TrajectoryGenerator → Controller → Plant
+StateEstimator → Controller (state feedback)
+PhysicsEngine → Plant (simulation backend)
+ArrayBackend → All components (numpy/torch)
 ```
 
 Key design: the arm's `step()` takes a Cartesian velocity twist `[dx, dy, dz, droll, dpitch, dyaw]`, integrates it into a target pose, runs IK internally, and sends joint angles to servos. The controller **never touches joint space**.
