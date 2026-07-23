@@ -472,8 +472,8 @@ class LTISystemsAnalyzer:
         cond_c = self.bk.cond(C) if rank_c == C.shape[0] else np.inf
         cond_o = self.bk.cond(O) if rank_o == O.shape[0] else np.inf
         return {
-            "controllability": (rank_c, cond_c),
-            "observability": (rank_o, cond_o),
+            "controllability": (int(rank_c), float(cond_c)),
+            "observability": (int(rank_o), float(cond_o)),
         }
 
     def summary(self) -> str:
