@@ -41,6 +41,8 @@ class MPC_LTI(Controller):
         backend: Array backend. Defaults to NumpyBackend.
     """
 
+    MAX_HORIZON = 200
+
     def __init__(
         self,
         horizon: int,
@@ -51,6 +53,12 @@ class MPC_LTI(Controller):
         terminal_cost,
         backend: Optional[ArrayBackend] = None,
     ):
+        if horizon > self.MAX_HORIZON:
+            raise ValueError(
+                f"Horizon {horizon} exceeds maximum {self.MAX_HORIZON}. "
+                "The dense lifted-matrix formulation scales as O(N^3) and "
+                "becomes intractable beyond ~200 steps."
+            )
         self.bk = backend or NumpyBackend()
         self.N = horizon
         self.Q = state_cost_matrix
